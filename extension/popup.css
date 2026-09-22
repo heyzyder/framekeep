@@ -1,0 +1,3 @@
+@import url("design.css");
+.page-bubble-access{padding:8px 20px;background:#eef3e9}.page-bubble-access .hint{display:block;margin-top:5px}
+.footer-actions{display:flex;align-items:center;gap:15px;flex:none}footer #desktop-handoff{color:var(--iris);font-weight:600}

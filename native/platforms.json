@@ -1,0 +1,18 @@
+[
+  {"name":"YouTube","domains":["youtube.com","youtu.be","youtube-nocookie.com"]},
+  {"name":"Vimeo","domains":["vimeo.com"]},
+  {"name":"TikTok","domains":["tiktok.com"]},
+  {"name":"Instagram","domains":["instagram.com","instagr.am"]},
+  {"name":"Reddit","domains":["reddit.com","redd.it"]},
+  {"name":"X / Twitter","domains":["x.com","twitter.com","t.co"]},
+  {"name":"Facebook","domains":["facebook.com","fb.watch"]},
+  {"name":"Twitch","domains":["twitch.tv"]},
+  {"name":"Dailymotion","domains":["dailymotion.com","dai.ly"]},
+  {"name":"Bilibili","domains":["bilibili.com","b23.tv"]},
+  {"name":"Pinterest","domains":["pinterest.com","pin.it"]},
+  {"name":"Tumblr","domains":["tumblr.com"]},
+  {"name":"Streamable","domains":["streamable.com"]},
+  {"name":"Rumble","domains":["rumble.com"]},
+  {"name":"VK","domains":["vk.com","vkvideo.ru"]},
+  {"name":"Bluesky","domains":["bsky.app"]}
+]

@@ -1,0 +1,2 @@
+# Preserve reviewed source bytes across Windows and Unix checkouts.
+* -text

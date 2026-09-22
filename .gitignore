@@ -1,0 +1,16 @@
+# Generated files and local application data
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+.venv/
+*.log
+config.json
+desktop-settings.json
+desktop-health.json
+host-manifest.json
+framekeep-install.json
+launcher.json
+launcher-build.json
+native/browser-sources/
+.framekeep/

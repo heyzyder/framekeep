@@ -21,7 +21,7 @@ import base64
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 ORIGIN = 'chrome-extension://mddibmfbdbahbimeclofpakiekckanio/'
-VERSION = '1.8.0'
+VERSION = '1.8.0-beta.2'
 MAX_MESSAGE = 65536
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 PLATFORMS = json.loads(Path(__file__).with_name('platforms.json').read_text(encoding='utf-8'))

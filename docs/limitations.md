@@ -26,3 +26,14 @@ Validated on Windows x64 with Python 3.12.6, Node.js 24.14.0, FFmpeg 8.1.1, the 
 The real network video fixture was [MDN's CC0 flower sample](https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4). A small [httpbin image response](https://httpbin.org/image/png) exercised original-byte capture; it is not distributed or shown in public screenshots. Synthetic artwork, audio and captions were authored for testing. Optional visual study preparation was tested against an already installed compatible Study Suite; speech/model quality and every external provider were not certified.
 
 Desktop's native save-dialog invocation was exercised; automated exported-text byte verification used the extension's export path. Windows code signing, Chrome Web Store installation, Linux/macOS, other browsers, clean-VM runtime bootstrapping and every optional model remain outside this beta's verified scope.
+
+## 1.8.0-beta.2 daily-upgrade verification
+
+The validation above records the original beta.1 release. Beta.2 additionally verified an in-place upgrade of an existing daily Windows installation, using its existing library and native connection:
+
+- Desktop, Start, and the existing pinned shortcut dispatched the same upgraded daily application. The live extension's **Media tools → Open Desktop** action started a new process in that installation and displayed Library, Activity, and Settings. This checks dispatch through the existing pinned shortcut; it does not certify removing or creating a taskbar pin.
+- A real extension capture appeared under the same job ID in daily Desktop, CLI, and an actual MCP process. **Open file** opened the saved image in Windows Photos. A cold restart retained the job's receipt timestamps, output hash, and collection without duplicate processing.
+- Desktop's real native **Save As** dialog exported three authored caption cues. An independent byte check verified the resulting 122-byte text file. This completes the Desktop export check that remained unverified in the beta.1 record.
+- Settings now exposes the running Desktop version, an installation build fingerprint, and collapsed local diagnostics. The fingerprint records the managed files and launcher at installation time; it is not a signature or a continuous integrity check. The registered extension ID does not claim the version currently loaded by Chrome. Diagnostic installation paths remain local and should be hidden in shared screenshots.
+
+These checks used an existing configured Windows machine. They do not establish clean-machine setup, automatic updates, new taskbar pinning, or broader browser/platform support. The beta.1 release and its original artifacts remain unchanged.

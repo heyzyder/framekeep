@@ -16,6 +16,17 @@ function Get-FramekeepExtensionId([string]$Root) {
     if ($id -ne 'mddibmfbdbahbimeclofpakiekckanio') { throw 'The source extension identity is not recognized.' }
     return $id
 }
+function Get-FramekeepBuildId([string]$Directory) {
+    # Fingerprint the installed managed payload, including its launcher. No
+    # absolute paths, user settings, receipts or saved media enter this ID.
+    $names = @((Get-FramekeepFiles).Keys) + @('Framekeep.exe')
+    $lines = foreach ($name in ($names | Sort-Object)) {
+        $name.Replace('\','/') + ':' + (Get-FramekeepSha256 (Join-Path $Directory $name)).ToLowerInvariant()
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
 function Assert-FramekeepPath([string]$Path) {
     if (-not [IO.Path]::IsPathRooted($Path)) { throw 'Use an absolute local installation path.' }
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')

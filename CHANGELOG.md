@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.0-beta.2
+
+- Add running Desktop version, managed-payload build fingerprint, and collapsed local installation diagnostics to Settings.
+- Keep prerelease version reporting consistent across Desktop, native host, Extension, and MCP.
+- Preserve existing installation paths, native registration, shortcuts, settings and saved media when updating the daily app.
+- Refresh current GitHub links and product description for heyzyder/framekeep. The beta.1 tag and assets remain unchanged.
+
 ## 1.8.0-beta.1
 
 First public Windows/Chrome beta. Extension and native protocol version: 1.8.0.

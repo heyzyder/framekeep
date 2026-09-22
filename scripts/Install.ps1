@@ -78,7 +78,7 @@ $manifest = Get-Content -LiteralPath (Join-Path $taskProject 'extension\manifest
 $version = (Get-Content -LiteralPath (Join-Path $taskProject 'package.json') -Raw | ConvertFrom-Json).version
 $ownedFiles = @((Get-FramekeepFiles).Keys) + @('Framekeep.exe','launcher.json','launcher-build.json','host.cmd','host-manifest.json')
 $registered = (-not $NoRegistration) -or ($previous -and $previous.registered -eq $true)
-Write-FramekeepJson (Join-Path $taskApp 'framekeep-install.json') @{name='Framekeep';version=$version;extensionVersion=$manifest.version;extensionId=$ExtensionId;nativeHostName=$NativeHostName;python=$Python;installDirectory=$taskApp;installedAt=[DateTime]::UtcNow.ToString('o');source=$taskProject;registered=$registered;shortcuts=@($shortcuts | Select-Object -Unique);files=$ownedFiles}
+Write-FramekeepJson (Join-Path $taskApp 'framekeep-install.json') @{name='Framekeep';version=$version;buildId=(Get-FramekeepBuildId $taskApp);extensionVersion=$manifest.version;extensionId=$ExtensionId;nativeHostName=$NativeHostName;python=$Python;installDirectory=$taskApp;installedAt=[DateTime]::UtcNow.ToString('o');source=$taskProject;registered=$registered;shortcuts=@($shortcuts | Select-Object -Unique);files=$ownedFiles}
 Write-Output "Framekeep $version installed: $taskApp"
 Write-Output "Saved media: $DownloadDirectory"
 Write-Output ('Chrome: enable Developer mode at chrome://extensions, Load unpacked, select ' + (Join-Path $taskProject 'extension'))

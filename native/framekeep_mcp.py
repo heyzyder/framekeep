@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+from host import VERSION
 from framekeep_cli import invoke,load_config
 
 SCHEMA={'type':'object','properties':{'action':{'type':'string','enum':['status','library','job','probe','download','capture','transcript','cancel','study-submit','study-status','study-read','study-artifact','study-resume']},
@@ -18,7 +19,7 @@ def main():
             request=json.loads(line)
             if 'id' not in request: continue
             method=request.get('method')
-            if method=='initialize': result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'framekeep','version':'1.8.0'}}
+            if method=='initialize': result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'framekeep','version':VERSION}}
             elif method=='ping': result={}
             elif method=='tools/list': result={'tools':[{'name':'framekeep','description':'Inspect or invoke Framekeep acquisition and optional attached study jobs. Same IDs and results as Desktop. No automatic study review.','inputSchema':SCHEMA}]}
             elif method=='tools/call':

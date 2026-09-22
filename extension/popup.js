@@ -3,7 +3,7 @@ import {createTransport, desktop} from './transport.js';
 import {icon, decorateIcons} from './ui-icons.js';
 const $ = id => document.getElementById(id);
 const port = createTransport();
-const UI_VERSION = '1.8.0';
+const UI_VERSION = globalThis.chrome?.runtime?.getManifest?.().version_name || globalThis.chrome?.runtime?.getManifest?.().version || '1.8.0-beta.2';
 let current, displayedInfo, historyKey, transcriptKey, sourceUrl, pageKey, deleteId;
 let formatIntentId, preferencesLoaded = false, view = document.documentElement.classList.contains('panel') ? 'transcript' : 'save', pendingStart = false;
 let resultTimer, scanTimer, autoScanCount = 0, completionJobId;

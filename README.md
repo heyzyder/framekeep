@@ -1,8 +1,8 @@
-# Framekeep
+# Framekeep — Media Downloader & Local Library
 
-**Keep useful media close.** Capture from Chrome, find it in your Windows library, and return to the source, playback and available captions in one workspace.
+**Keep useful media close.** Download supported media from Chrome, find it in your Windows library, and return to the source, playback and available captions in one workspace.
 
-Windows / Chrome · 1.8.0-beta.1 · local storage · MIT original source
+Windows / Chrome · 1.8.0-beta.2 · local storage · MIT original source
 
 ![Framekeep Desktop Library](docs/screenshots/desktop-library.png)
 
@@ -20,7 +20,7 @@ Basic capture and playback require no account, paid inference or local model. Vi
 ## Install on Windows
 
 1. Install **64-bit Python 3.11+**, **Node.js 22+**, **FFmpeg** (including FFprobe), and **Microsoft WebView2 Evergreen Runtime** at user or machine scope. Put Python, Node and FFmpeg on PATH.
-2. Download and extract the Windows ZIP from this repository's **Releases** page. Keep it in a stable local directory.
+2. Download and extract the Windows ZIP from [Framekeep Releases](https://github.com/heyzyder/framekeep/releases). Keep it in a stable local directory.
 3. Double-click **Install Framekeep.cmd** in File Explorer. It installs the small app/helper under `%USERPROFILE%\Applications\Framekeep`, reuses your runtimes and installs missing Python packages at user scope.
 4. Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted `extension` directory. Pin Framekeep.
 5. On a page, open the floating picker, select media and save. Images default to **Original copies · metadata retained**. Choose cleaning only when the optional local sanitizer is installed. Open Framekeep from Start to find the result.
@@ -52,7 +52,7 @@ Finished files appear in **Library**. Open an item for playback and captions, us
 Plain JavaScript and Python; no frontend bundle or npm dependency installation is needed for these checks.
 
 ```powershell
-git clone https://github.com/quenmatkhau1234s/framekeep.git
+git clone https://github.com/heyzyder/framekeep.git
 cd framekeep
 npm test
 npm run check

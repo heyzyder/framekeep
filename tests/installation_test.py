@@ -14,6 +14,31 @@ package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
 
 class InstallationPackageTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows PowerShell build identity')
+    def test_build_identity_tracks_managed_bytes_without_local_data_or_paths(self):
+        helper = str(Path(__file__).parents[1] / 'scripts' / 'Install-Common.ps1').replace("'", "''")
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / 'first', Path(directory) / 'second'
+            for root in (first, second):
+                root.mkdir()
+                (root / 'host.py').write_bytes(b'app')
+                (root / 'Framekeep.exe').write_bytes(b'launcher')
+                (root / 'config.json').write_text(str(root), encoding='utf-8')
+            script = f". '{helper}'; function Get-FramekeepFiles {{ @{{'host.py'='native\\host.py'}} }}; "
+            script += f"Get-FramekeepBuildId '{str(first).replace(chr(39), chr(39)*2)}'; Get-FramekeepBuildId '{str(second).replace(chr(39), chr(39)*2)}'"
+            def hashes():
+                result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',script], capture_output=True,text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout.splitlines()
+            before = hashes()
+            self.assertEqual(len(before), 2)
+            self.assertRegex(before[0], r'^[0-9a-f]{64}$')
+            self.assertEqual(before[0], before[1])
+            (second / 'host.py').write_bytes(b'updated app')
+            after = hashes()
+            self.assertEqual(after[0], before[0])
+            self.assertNotEqual(after[0], after[1])
+
     @unittest.skipUnless(os.name == 'nt', 'Windows PowerShell validation')
     def test_hashing_does_not_depend_on_module_search_path(self):
         helper = str(Path(__file__).parents[1] / 'scripts' / 'Install-Common.ps1').replace("'", "''")

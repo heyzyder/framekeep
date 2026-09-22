@@ -12,7 +12,7 @@ const info = {title: 'A test video', heights: [720], tracks: [{language: 'en', n
 const event = () => ({listeners: [], addListener(fn) { this.listeners.push(fn); }, emit(value) { for (const fn of this.listeners) fn(value); }});
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
 
-async function harness(t, {jobs = [], notifications = true, tab = null, media = []} = {}) {
+async function harness(t, {jobs = [], notifications = true, tab = null, media = [], manifest = {version: '1.6.0'}} = {}) {
   const requests = [], alerts = [], messages = [], timers = new Set();
   const local = {jobs, settings: {notifications}}, session = {};
   const storage = data => ({
@@ -22,11 +22,11 @@ async function harness(t, {jobs = [], notifications = true, tab = null, media = 
   });
   const native = {onMessage: event(), onDisconnect: event(), disconnect() {}, postMessage(message) {
     requests.push(message);
-    if (['status', 'cancel'].includes(message.action)) queueMicrotask(() => native.onMessage.emit({id: message.id, event: 'result', data: {version: '1.6.0', protocol:2, capabilities:['page-sources','parallel-downloads']}}));
+    if (['status', 'cancel'].includes(message.action)) queueMicrotask(() => native.onMessage.emit({id: message.id, event: 'result', data: {version: manifest.version_name || manifest.version, protocol:2, capabilities:['page-sources','parallel-downloads']}}));
   }};
   const chrome = {
     storage: {local: storage(local), session: storage(session)},
-    runtime: {id: 'test', getManifest: () => ({version:'1.6.0'}), onConnect: event(), onInstalled: event(), getURL: path => 'chrome-extension://test/' + path, connectNative: () => native},
+    runtime: {id: 'test', getManifest: () => manifest, onConnect: event(), onInstalled: event(), getURL: path => 'chrome-extension://test/' + path, connectNative: () => native},
     action: {async setBadgeText({text}) { chrome.badge = text; }, async setBadgeBackgroundColor() {}, async setTitle() {}},
     notifications: {async getPermissionLevel() { return 'granted'; }, async create(id, options) { alerts.push({id, ...options}); }, onClicked: event(), onButtonClicked: event()},
     contextMenus: {onClicked: event()}, tabs: {onActivated: event(), onUpdated: event(), async query(query) { return query.url ? [] : tab ? [tab] : []; }},
@@ -53,6 +53,14 @@ async function harness(t, {jobs = [], notifications = true, tab = null, media = 
   };
   return {chrome, alerts, requests, messages, send, respond, probe, local, session, setTab(value) { tab = value; }, get state() { return messages.at(-1); }};
 }
+
+test('matching prerelease helper is recognized without repeated reconnects', async t => {
+  const h = await harness(t, {manifest: {version: '1.8.0', version_name: '1.8.0-beta.2'}});
+  assert.equal(h.state.workerVersion, '1.8.0-beta.2');
+  assert.equal(h.state.helper.status, 'ready');
+  await h.send('check');
+  assert.equal(h.requests.filter(request => request.action === 'status').length, 1);
+});
 
 test('opening on a course automatically detects and checks its single video without starting a download', async t => {
   const h = await harness(t, {tab:{id:1,url:'https://course.example/lesson/one',title:'Lesson one'}, media:[{type:'direct',url:'https://cdn.example/one.m3u8?token=test',title:'Lesson one'}]});

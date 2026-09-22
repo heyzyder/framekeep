@@ -261,7 +261,14 @@ function renderSettings() {
   $('setup-help').hidden = connected;
   const study = state?.capabilities?.study;
   text('study-availability', study?.available ? 'The optional study adapter is connected. Available operations appear in each item’s Evidence tab.' : study?.reason || 'Optional study tools are not connected. Media capture, playback and source captions are available without them.');
-  text('settings-version', `Framekeep ${helper.version || state.workerVersion || 'beta'} · Windows / Chrome beta. Local files and jobs; no automatic cloud sync.`);
+  const app = state?.app || {}, version = app.version || state.workerVersion || helper.version || 'beta';
+  text('sidebar-version', `Framekeep ${version}`);
+  text('settings-version', `Framekeep ${version}`);
+  text('settings-build', app.buildId ? `Build ${app.buildId.slice(0, 12)}` : 'Build receipt unavailable');
+  text('app-install-directory', app.installDirectory || 'Unavailable outside the installed Desktop app');
+  text('app-build-id', app.buildId || 'Unavailable');
+  text('app-native-host', app.nativeHostName || 'Unavailable');
+  text('app-extension-id', app.extensionId || 'Unavailable');
 }
 function captureChoices() {
   const info = state?.probe?.info; if (!info) return;

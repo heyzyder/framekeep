@@ -14,6 +14,31 @@ import host
 ACTIVE = {'starting', 'downloading', 'processing', 'cancelling'}
 
 
+def app_identity(directory):
+    """Local diagnostics for the running app, never a telemetry payload."""
+    directory = Path(directory).resolve()
+    identity = {'version': host.VERSION, 'installDirectory': str(directory), 'buildId': ''}
+    try:
+        receipt = json.loads((directory / 'framekeep-install.json').read_text('utf-8-sig'))
+        if not isinstance(receipt, dict): receipt = {}
+        # A receipt from an older install must not label newly copied app code.
+        build = receipt.get('buildId', '')
+        if receipt.get('version') == host.VERSION and isinstance(build, str) and re.fullmatch(r'[0-9a-f]{64}', build):
+            identity['buildId'] = build
+        for name, pattern in [('nativeHostName', r'com\.framekeep\.[a-z][a-z0-9_.]*'), ('extensionId', r'[a-p]{32}')]:
+            value = receipt.get(name, '')
+            if isinstance(value, str) and re.fullmatch(pattern, value): identity[name] = value
+    except (OSError, ValueError): pass
+    if not identity.get('nativeHostName'):
+        try:
+            manifest = json.loads((directory / 'host-manifest.json').read_text('utf-8-sig'))
+            name = manifest.get('name', '') if isinstance(manifest, dict) else ''
+            if isinstance(name, str) and re.fullmatch(r'com\.framekeep\.[a-z][a-z0-9_.]*', name):
+                identity['nativeHostName'] = name
+        except (OSError, ValueError): pass
+    return identity
+
+
 class DesktopBridge:
     def __init__(self, config, directory):
         self._config, self._directory = config, Path(directory)
@@ -29,7 +54,7 @@ class DesktopBridge:
         self._last_study_poll = 0
         self._preview = None
         self._state = {
-            'protocol': 2, 'workerVersion': host.VERSION,
+            'protocol': 2, 'workerVersion': host.VERSION, 'app': app_identity(Path(__file__).parent),
             'helper': {'status': 'checking'}, 'probe': {'status': 'idle'}, 'jobs': [],
             'settings': {'kind': 'video', 'quality': '1080', 'audioQuality': '192', 'notifications': True},
             'alerts': {'status': 'granted'}, 'transcript': {'status': 'idle'},

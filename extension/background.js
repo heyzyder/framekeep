@@ -14,7 +14,7 @@ let idleTimer;
 let lastBadge = '';
 let lastProgressSave = 0;
 let state = {
-  protocol: 2, workerVersion: '1.8.0',
+  protocol: 2, workerVersion: chrome.runtime.getManifest().version_name || chrome.runtime.getManifest().version,
   helper: {status: 'checking'},
   probe: {status: 'idle'},
   jobs: [],
@@ -148,12 +148,12 @@ function request(action, data = {}, timeout = 130000) {
   });
 }
 async function checkHelper() {
-  if (nativePort && state.helper.status === 'ready' && state.helper.version === chrome.runtime.getManifest().version) return;
+  if (nativePort && state.helper.status === 'ready' && state.helper.version === state.workerVersion) return;
   state.helper = {status: 'checking'};
   publish();
   try {
     let result = await request('status', {}, 15000);
-    if (result.data.version !== chrome.runtime.getManifest().version && !state.jobs.some(job => ACTIVE.has(job.status)) && !pending.size) {
+    if (result.data.version !== state.workerVersion && !state.jobs.some(job => ACTIVE.has(job.status)) && !pending.size) {
       const previous = nativePort; nativePort = null; previous?.disconnect();
       result = await request('status', {}, 15000);
     }

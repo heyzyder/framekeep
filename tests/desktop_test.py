@@ -1,10 +1,11 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1] / 'native'))
-from desktop_bridge import DesktopBridge
+from desktop_bridge import DesktopBridge, app_identity
 import host
 
 class DesktopTests(unittest.TestCase):
@@ -17,6 +18,49 @@ class DesktopTests(unittest.TestCase):
             snap=bridge.snapshot(); self.assertIn('jobs',snap['state'])
             self.assertIsNone(bridge.snapshot(snap['revision']))
             bridge._server.close()
+
+    def test_running_version_and_location_do_not_trust_stale_receipt(self):
+        with tempfile.TemporaryDirectory() as root:
+            receipt = Path(root) / 'framekeep-install.json'
+            receipt.write_text(json.dumps({'version': 'older-build', 'installDirectory': 'wrong-directory', 'buildId': 'a' * 64}), encoding='utf-8')
+            identity = app_identity(root)
+            self.assertEqual(identity['version'], host.VERSION)
+            self.assertEqual(identity['installDirectory'], str(Path(root).resolve()))
+            self.assertEqual(identity['buildId'], '')
+            receipt.write_text(json.dumps({'version': host.VERSION, 'buildId': 'b' * 64,
+                'nativeHostName': 'com.framekeep.downloader', 'extensionId': 'mddibmfbdbahbimeclofpakiekckanio'}), encoding='utf-8')
+            identity = app_identity(root)
+            self.assertEqual(identity['buildId'], 'b' * 64)
+            self.assertEqual(identity['nativeHostName'], 'com.framekeep.downloader')
+            self.assertEqual(identity['extensionId'], 'mddibmfbdbahbimeclofpakiekckanio')
+
+    def test_missing_or_invalid_receipt_keeps_desktop_diagnostics_available(self):
+        with tempfile.TemporaryDirectory() as root:
+            receipt = Path(root) / 'framekeep-install.json'
+            for content in (None, 'not json', '[]', '{"buildId":42}'):
+                if content is not None: receipt.write_text(content, encoding='utf-8')
+                self.assertEqual(app_identity(root), {'version': host.VERSION, 'installDirectory': str(Path(root).resolve()), 'buildId': ''})
+
+    def test_legacy_receipt_gets_host_name_from_local_native_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'framekeep-install.json').write_text(json.dumps({'version': '1.7.2',
+                'extensionId': 'mddibmfbdbahbimeclofpakiekckanio'}), encoding='utf-8')
+            manifest = Path(root) / 'host-manifest.json'
+            manifest.write_text(json.dumps({'name': 'com.framekeep.downloader'}), encoding='utf-8')
+            identity = app_identity(root)
+            self.assertEqual(identity['nativeHostName'], 'com.framekeep.downloader')
+            self.assertEqual(identity['extensionId'], 'mddibmfbdbahbimeclofpakiekckanio')
+            for invalid in ('other.host', 42, None):
+                manifest.write_text(json.dumps({'name': invalid}), encoding='utf-8')
+                self.assertNotIn('nativeHostName', app_identity(root))
+
+    def test_running_and_extension_release_versions_match_package(self):
+        root = Path(__file__).parents[1]
+        version = json.loads((root / 'package.json').read_text('utf-8-sig'))['version']
+        manifest = json.loads((root / 'extension/manifest.json').read_text('utf-8-sig'))
+        self.assertEqual(host.VERSION, version)
+        self.assertEqual(manifest['version_name'], version)
+        self.assertEqual(manifest['version'], version.split('-')[0])
 
     def test_library_removes_deleted_file_and_preserves_failed_delete(self):
         with tempfile.TemporaryDirectory() as root:

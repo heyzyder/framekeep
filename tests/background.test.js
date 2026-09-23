@@ -34,7 +34,7 @@ async function harness(t, {jobs = [], notifications = true, tab = null, media = 
     permissions: {async contains() { return false; }},
     scripting: {async executeScript() { return [{result: {media}}]; }},
   };
-  vm.runInNewContext(source, {...shared, inspectMedia, mediaSource, uniqueMedia, previewImage, chrome, console, URL, crypto: {randomUUID}, installPageTranscripts() {}, installCapture() {},
+  vm.runInNewContext(source, {...shared, inspectMedia, mediaSource, uniqueMedia, previewImage, chrome, console, URL, crypto: {randomUUID}, installPageTranscripts() {}, installCapture() {}, registerWidgetVisibility() {}, installBrowserTranscription(){return {isActive:()=>false,disconnected(){}};},
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timers.add(timer); return timer; }, clearTimeout,
   });
   t.after(() => { for (const timer of timers) clearTimeout(timer); });

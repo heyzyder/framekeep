@@ -17,12 +17,15 @@ EXTENSION = ('background.js', 'capture-discovery.js', 'capture-worker.js', 'desi
              'floating.css', 'floating.js', 'frame-media.js', 'manifest.json', 'page-media.js',
              'page-transcripts.js', 'popup.css', 'popup.html', 'popup.js', 'shared.js',
              'transport.js', 'ui-icons.js', 'view.js', 'youtube-transcript.js',
-             'desktop.html', 'desktop.css', 'desktop.js')
+             'desktop.html', 'desktop.css', 'desktop.js', 'desktop-model.js', 'widget-visibility.js',
+             'browser-transcript-worker.js', 'browser-transcript-ui.js', 'browser-transcript.html',
+             'browser-transcript.css', 'browser-transcript-panel.js', 'browser-audio.html',
+             'browser-audio.js', 'browser-audio-worklet.js')
 ICONS = ('icon16.png', 'icon32.png', 'icon48.png', 'icon128.png', 'framekeep.ico', 'framekeep-app.ico')
 NATIVE = ('host.py', 'desktop.pyw', 'desktop_bridge.py', 'windows_identity.py', 'recycle.py',
           'page_source.py', 'browser_sources.py', 'media_capture.py', 'podcast_audio.py',
           'wrapped_hls.py', 'platforms.json', 'launcher.cs', 'library_state.py', 'media_preview.py',
-          'study_adapter.py', 'framekeep_cli.py', 'framekeep_mcp.py')
+          'study_adapter.py', 'browser_transcription.py', 'streaming_engine.py', 'framekeep_cli.py', 'framekeep_mcp.py')
 SCRIPTS = ('Install.ps1', 'Install-Common.ps1', 'Uninstall.ps1', 'Update-Installed.ps1',
            'Build-Launcher.ps1', 'Package.ps1', 'Build-Beta.ps1', 'package_source.py', 'check.mjs')
 DOCS = ('installation.md', 'architecture.md', 'limitations.md')
@@ -31,7 +34,9 @@ SCREENSHOTS = ('desktop-library.png', 'desktop-activity.png', 'desktop-settings.
 TESTS = ('background.test.js', 'capture-worker.test.js', 'frame-media.test.js', 'page-media.test.js',
          'page-transcripts.test.js', 'shared.test.js', 'youtube-intake.test.js', 'desktop_test.py',
          'media_capture_test.py', 'native_test.py', 'page_source_test.py', 'podcast_audio_test.py',
-         'wrapped_hls_test.py', 'installation_test.py', 'beta_backend_test.py', 'beta_capture_test.py')
+         'wrapped_hls_test.py', 'installation_test.py', 'beta_backend_test.py', 'beta_capture_test.py',
+         'desktop-model.test.js', 'desktop-ui.test.js', 'widget-visibility.test.js', 'journeys_backend_test.py',
+         'browser-transcript-worker.test.js', 'browser-audio.test.js', 'browser_transcription_test.py')
 PUBLIC_GITIGNORE = '''# Generated files and local application data
 __pycache__/
 *.py[cod]

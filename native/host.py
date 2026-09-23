@@ -21,7 +21,7 @@ import base64
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 ORIGIN = 'chrome-extension://mddibmfbdbahbimeclofpakiekckanio/'
-VERSION = '1.8.0-beta.2'
+VERSION = '1.8.0-beta.3'
 MAX_MESSAGE = 65536
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 PLATFORMS = json.loads(Path(__file__).with_name('platforms.json').read_text(encoding='utf-8'))
@@ -326,6 +326,9 @@ class Host:
         self.library = Library(config['directory'])
         self._closed = threading.Event()
         self._recorded = set()
+        from browser_transcription import BrowserTranscription
+        self.browser_transcription = BrowserTranscription(config, self.library)
+        self._browser_pending = threading.Lock()
 
     def publish(self, message):
         # Keep durable receipts even when an in-process adapter supplies its own emit.
@@ -367,9 +370,32 @@ class Host:
             raise ValueError('Invalid request ID.')
         action = message.get('action')
         try:
-            if action in ('library', 'job'):
+            if action in ('browser-start', 'browser-chunk', 'browser-stop', 'browser-study', 'browser-study-status'):
+                # One bounded request at a time. No unbounded host threads/audio queue.
+                if not self._browser_pending.acquire(blocking=False):
+                    raise ValueError('Wait for the previous browser speech chunk to finish.')
+                def browser_work():
+                    try:
+                        if action == 'browser-start': data=self.browser_transcription.start(message)
+                        elif action == 'browser-chunk': data=self.browser_transcription.chunk(message)
+                        elif action == 'browser-stop': data=self.browser_transcription.stop(str(message.get('reason',''))[:300], bool(message.get('interrupted')), message.get('droppedChunks',0))
+                        else:
+                            from study_adapter import StudyAdapter
+                            item=self.library.item(message.get('itemId'))
+                            study=StudyAdapter(self.config,self.library)
+                            data=study.submit(item,'speech') if action=='browser-study' else study.status(item)
+                            data={**data,'itemId':item['id'],'tracks':study.transcript_tracks(item) if data.get('canReadTranscript') else []}
+                        self.publish({'id':request_id,'event':'result','data':data})
+                    except Exception as error:
+                        if action=='browser-chunk':
+                            try:self.browser_transcription.stop(str(error)[:300],True)
+                            except Exception:pass
+                        self.publish({'id':request_id,'event':'error','error':str(error)[:700]})
+                    finally:self._browser_pending.release()
+                threading.Thread(target=browser_work,daemon=True).start()
+            elif action in ('library', 'job'):
                 if action == 'library':
-                    items,jobs=self.library.scan(); data={'library':items,'jobs':jobs}
+                    items,jobs=self.library.scan(); data={'library':items,'jobs':jobs,'collections':self.library.collections(items)}
                 else:
                     data=self.library.get_job(message.get('target'))
                     if not data: raise ValueError('Unknown job ID.')
@@ -381,7 +407,8 @@ class Host:
                 version = importlib.metadata.version('yt-dlp')
                 importlib.metadata.version('yt-dlp-ejs')
                 self.publish({'id': request_id, 'event': 'result', 'data': {
-                    'version': VERSION, 'protocol': 2, 'location': str(Path(__file__).resolve().parent), 'extractor': version, 'directory': str(self.config['directory']), 'capabilities': ['trash', 'preview', 'desktop', 'page-sources', 'parallel-downloads', 'shared-library', 'shared-jobs']}})
+                    'version': VERSION, 'protocol': 2, 'location': str(Path(__file__).resolve().parent), 'extractor': version, 'directory': str(self.config['directory']), 'capabilities': ['trash', 'preview', 'desktop', 'page-sources', 'parallel-downloads', 'shared-library', 'shared-jobs', 'browser-transcription'],
+                    'browserTranscription':__import__('browser_transcription').capability(self.config)}})
             elif action == 'capture':
                 from media_capture import run_capture
                 existing=self.library.begin(message)
@@ -629,6 +656,9 @@ class Host:
 
     def close(self):
         self._closed.set()
+        # Closing Chrome/its native port finalizes the recoverable audio and partial text.
+        try:self.browser_transcription.stop('Browser connection closed; partial transcript preserved.',True)
+        except Exception:pass
         with self.job_lock:
             tasks = list(self.jobs.values())
         for task in tasks:

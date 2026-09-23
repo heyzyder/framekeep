@@ -2,9 +2,12 @@ import { normalizeUrl, PLATFORMS, ACTIVE, HOST, downloadKey, recentJobs } from '
 import { installPageTranscripts } from './page-transcripts.js';
 import { inspectMedia, mediaSource, previewImage, uniqueMedia } from './page-media.js';
 import {installCapture} from './capture-worker.js';
+import {installBrowserTranscription} from './browser-transcript-worker.js';
+import {registerWidgetVisibility} from './widget-visibility.js';
 
 installPageTranscripts(chrome);
 installCapture(chrome);
+registerWidgetVisibility();
 
 const clients = new Set();
 const sentTranscripts = new WeakMap();
@@ -27,6 +30,18 @@ let transcriptGeneration = 0;
 let probeGeneration = 0;
 let scanGeneration = 0;
 let observedTab;
+const browserSpeech=installBrowserTranscription(chrome,{request,
+  captions:async()=>{
+    await checkHelper();await scanPage(true);
+    if(state.probe.status!=='ready')throw new Error('Select accessible media in the Framekeep toolbar first.');
+    await loadTranscript();
+    const started=Date.now();
+    while(state.transcript.status==='loading'&&Date.now()-started<130000)await new Promise(resolve=>setTimeout(resolve,200));
+    if(state.transcript.status==='error')throw new Error(state.transcript.error);
+    return state.transcript;
+  },
+  generateSource:async()=>{await checkHelper();await scanPage(true);if(state.probe.status!=='ready')throw new Error('This page does not expose accessible media. Try live transcription while playing.');return {url:state.probe.url,source:state.probe.source,title:state.probe.info?.title};}
+});
 const ready = (async () => {
   const [saved, session] = await Promise.all([chrome.storage.local.get(['jobs', 'settings']), chrome.storage.session.get(['probe', 'transcript'])]);
   state.settings = {...state.settings, ...saved.settings};
@@ -48,14 +63,14 @@ function publish() {
   }
   const activeJobs = state.jobs.filter(job => ACTIVE.has(job.status)), active = activeJobs[0];
   const unseen = state.jobs.find(job => job.unread && ['complete', 'error', 'interrupted'].includes(job.status));
-  const text = activeJobs.length > 1 ? String(activeJobs.length) : active ? (active.status === 'downloading' && Number.isFinite(active.percent) ? `${Math.floor(active.percent)}%` : '↓') : unseen ? (unseen.status === 'complete' ? '✓' : '!') : '';
-  const color = active ? '#5965db' : unseen?.status === 'complete' ? '#247f6c' : '#b74658';
+  const text = browserSpeech.isActive() ? 'REC' : activeJobs.length > 1 ? String(activeJobs.length) : active ? (active.status === 'downloading' && Number.isFinite(active.percent) ? `${Math.floor(active.percent)}%` : '↓') : unseen ? (unseen.status === 'complete' ? '✓' : '!') : '';
+  const color = browserSpeech.isActive() ? '#b52c42' : active ? '#5965db' : unseen?.status === 'complete' ? '#247f6c' : '#b74658';
   const badgeKey = `${text}:${color}`;
   if (lastBadge !== badgeKey) {
     lastBadge = badgeKey;
     chrome.action.setBadgeText({text}).catch(() => {});
     chrome.action.setBadgeBackgroundColor({color}).catch(() => {});
-    chrome.action.setTitle({title: activeJobs.length > 1 ? `Framekeep · ${activeJobs.length} downloads running` : active ? `Framekeep · ${text} · ${active.title}` : unseen ? `Framekeep · ${unseen.status === 'complete' ? 'Download finished' : 'Download needs attention'}` : 'Save with Framekeep'}).catch(() => {});
+    chrome.action.setTitle({title: browserSpeech.isActive() ? 'Framekeep is transcribing tab audio · Open toolbar → Stop' : activeJobs.length > 1 ? `Framekeep · ${activeJobs.length} downloads running` : active ? `Framekeep · ${text} · ${active.title}` : unseen ? `Framekeep · ${unseen.status === 'complete' ? 'Download finished' : 'Download needs attention'}` : 'Save with Framekeep'}).catch(() => {});
   }
 }
 async function saveJobs() { state.jobs = recentJobs(state.jobs); await chrome.storage.local.set({jobs: state.jobs}); }
@@ -77,7 +92,7 @@ async function notifyJob(job) {
 }
 function idleDisconnect() {
   clearTimeout(idleTimer);
-  if (!clients.size && !pending.size && !state.jobs.some(job => ACTIVE.has(job.status))) {
+  if (!clients.size && !pending.size && !browserSpeech.isActive() && !state.jobs.some(job => ACTIVE.has(job.status))) {
     idleTimer = setTimeout(() => { const port = nativePort; nativePort = null; port?.disconnect(); }, 10000);
   }
 }
@@ -121,6 +136,7 @@ function connect() {
     const reason = chrome.runtime.lastError?.message;
     if (nativePort !== port) return;
     nativePort = null;
+    browserSpeech.disconnected();
     state.helper = {status: 'missing', error: reason || 'The local helper disconnected.'};
     for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error(reason || 'The helper disconnected.')); }
     pending.clear();

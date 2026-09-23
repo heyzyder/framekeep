@@ -38,7 +38,7 @@ test('all 16 platforms route identically in the extension and helper', async () 
 });
 test('persistent bubble runs on web pages; transcript injection stays on YouTube', async () => {
   const manifest = JSON.parse(await readFile(new URL('../extension/manifest.json', import.meta.url)));
-  assert.deepEqual(manifest.permissions.sort(), ['activeTab', 'contextMenus', 'nativeMessaging', 'storage', 'notifications', 'sidePanel', 'scripting', 'webNavigation'].sort());
+  assert.deepEqual(manifest.permissions.sort(), ['activeTab', 'contextMenus', 'nativeMessaging', 'storage', 'notifications', 'sidePanel', 'scripting', 'webNavigation', 'tabCapture', 'offscreen'].sort());
   assert.deepEqual(manifest.optional_host_permissions, ['https://*/*', 'http://*/*']);
   assert.equal(manifest.host_permissions, undefined);
   assert.deepEqual(manifest.content_scripts[0], {matches: ['https://www.youtube.com/*'], js: ['youtube-transcript.js'], run_at: 'document_idle'});

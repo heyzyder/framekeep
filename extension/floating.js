@@ -1,14 +1,16 @@
 (() => {
   if (window !== top || document.getElementById('framekeep-widget')) return;
-  const host=document.createElement('div'); host.id='framekeep-widget';
+  const host=document.createElement('div'); host.id='framekeep-widget'; host.hidden=true;
   // Isolate styling while keeping standard DOM controls accessible to assistive tools.
   const root=host.attachShadow({mode:'open'});
   const style=document.createElement('link'); style.rel='stylesheet';style.href=chrome.runtime.getURL('floating.css');root.append(style);
   const html=document.createElement('div');
   html.innerHTML=`<button class="bubble" aria-label="Open Framekeep" aria-expanded="false" title="Framekeep · Click to open, drag to move"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3M12 7v10m-4-4 4 4 4-4"/></svg><span class="badge" hidden></span></button>
+  <button class="bubble-dismiss" data-action="visibility" aria-label="Hide Framekeep widget" aria-expanded="false" title="Hide widget · restore from the Framekeep toolbar">×</button>
+  <div class="visibility-menu" role="group" aria-label="Widget visibility" hidden><strong>Widget visibility</strong><button data-action="hide">Hide until this tab closes</button><button data-action="disable">Disable on this site</button><button data-action="global-hide">Hide on all sites</button><p>Live transcription stops when hidden. Downloads continue. Restore from the Framekeep toolbar → Show page widget.</p></div>
   <section class="panel" role="dialog" aria-label="Framekeep media capture" hidden>
     <header><div class="brand"><div class="wordmark">framekeep<span>.</span></div><p class="page-name"></p></div><button class="refresh icon" data-action="refresh" title="Refresh media" aria-label="Refresh media">↻</button><button class="icon" data-action="expand" aria-label="Expand panel" title="Expand panel">⤢</button><button class="icon" data-action="settings" aria-label="Bubble settings" title="Bubble settings">⋯</button><button class="icon" data-action="close" aria-label="Close panel">×</button></header>
-    <div class="settings" hidden><button data-action="compact">Use compact bubble</button><button data-action="hide">Hide until next visit</button><button data-action="disable">Disable on this site</button><p>Restore from Framekeep’s toolbar → Show page bubble.</p></div>
+    <div class="settings" hidden><button data-action="compact">Use compact bubble</button><button data-action="visibility">Widget visibility…</button><p>Restore from Framekeep’s toolbar → Show page widget.</p></div>
     <nav aria-label="Filter media"><button data-filter="all" class="selected">All <span></span></button><button data-filter="image">Images <span></span></button><button data-filter="video">Video <span></span></button><button data-filter="audio">Audio <span></span></button></nav>
     <div class="selection"><label><input type="checkbox" class="select-all"> <span>Select all</span></label><span class="count"></span></div>
     <div class="media-area"><div class="grid"></div><p class="empty" hidden>No media found yet.<br>Play audio or video, or scroll to load images.<br><button data-action="video-tools">Check a media player ↗</button></p></div>
@@ -48,6 +50,7 @@
     const top=above>=12?above:below+height<=innerHeight-12?below:Math.max(12,Math.min(innerHeight-height-12,y-120));
     if(above<12&&below+height>innerHeight-12){if(x-width-12>=12)left=x-width-12;else if(x+size+12+width<=innerWidth-12)left=x+size+12;}
     panel.style.cssText=`position:fixed;left:${left}px;top:${top}px;width:${width}px;height:${height}px`;
+    const menu=$('.visibility-menu'); menu.style.left=`${Math.max(12,Math.min(innerWidth-292,x-260))}px`;menu.style.top=`${Math.max(12,Math.min(innerHeight-245,y-230))}px`;
     panel.classList.toggle('expanded',prefs.expanded);
     $('[data-action="expand"]').setAttribute('aria-label',prefs.expanded?'Restore panel size':'Expand panel');
     $('[data-action="expand"]').title=prefs.expanded?'Restore panel size':'Expand panel';
@@ -105,13 +108,28 @@
     const notes=[];if(result.truncated)notes.push('Showing the first 200 media links.');if(result.protectedMedia)notes.push('Protected players are excluded.');if(result.unavailable)notes.push('Some inline media has no downloadable file.');
     $('.limits').textContent=notes.join(' ');$('.limits').hidden=!notes.length;changed=false;render();
   }
-  function open(value){opened=value;panel.hidden=!value;bubble.setAttribute('aria-expanded',String(value));if(value){position();scan();connect();$('[data-action="refresh"]').focus();}else{bubble.focus();$('.preview').hidden=true;}}
+  let previousFocus=null, tabHidden=false, siteDisabled=false, globallyHidden=false;
+  function open(value){if(value&&!opened)previousFocus=document.activeElement;opened=value;panel.hidden=!value;bubble.setAttribute('aria-expanded',String(value));if(value){position();scan();connect();$('[data-action="refresh"]').focus();}else{bubble.focus();$('.preview').hidden=true;$('.settings').hidden=true;}}
+  function visibility(value){$('.visibility-menu').hidden=!value;$('.bubble-dismiss').setAttribute('aria-expanded',String(value));position();if(value)$('[data-action="hide"]').focus();else bubble.focus();}
+  function applyVisibility(){host.hidden=tabHidden||siteDisabled||globallyHidden;if(host.hidden){opened=false;panel.hidden=true;$('.visibility-menu').hidden=true;bubble.setAttribute('aria-expanded','false');}position();}
+  async function dismiss(scope){
+    // Capture is never hidden without stopping it; a missing worker keeps the control visible.
+    try { const stopped=await chrome.runtime.sendMessage({target:'framekeep-browser',action:'stop'}); if(stopped?.ok!==true)throw Error(); }
+    catch { $('.visibility-menu p').textContent='Could not confirm recording stopped. Open the Framekeep toolbar, stop transcription, then refresh this page.';return; }
+    try {
+      if(scope==='tab'){const result=await chrome.runtime.sendMessage({target:'framekeep-widget-state',action:'hide'});if(!result?.ok)throw Error();tabHidden=true;}
+      if(scope==='site'){await chrome.storage.local.set({[siteKey]:{disabled:true}});siteDisabled=true;}
+      if(scope==='global'){await chrome.storage.local.set({framekeepWidgetHidden:true});globallyHidden=true;}
+      applyVisibility();if(previousFocus?.isConnected&&previousFocus!==host)previousFocus.focus({preventScroll:true});
+    }catch{$('.visibility-menu p').textContent='Unable to save visibility. Refresh the page and try again.';}
+  }
   bubble.addEventListener('pointerdown',e=>{if(!e.isTrusted||e.button!==0)return;drag={x:e.clientX,y:e.clientY,left:parseFloat(host.style.left),top:parseFloat(host.style.top)};dragged=false;bubble.setPointerCapture(e.pointerId);});
   bubble.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.hypot(dx,dy)>5)dragged=true;if(!dragged)return;const size=prefs.compact?32:48;prefs.x=Math.max(0,Math.min(1,(drag.left+dx-12)/Math.max(1,innerWidth-size-24)));prefs.y=Math.max(0,Math.min(1,(drag.top+dy-12)/Math.max(1,innerHeight-size-24)));position();});
   bubble.addEventListener('pointerup',()=>{if(dragged)save();drag=null;});bubble.addEventListener('pointercancel',()=>{drag=null;});
   bubble.addEventListener('click',e=>{if(!e.isTrusted||(dragged&&e.detail!==0))return;open(!opened);});
   bubble.addEventListener('keydown',e=>{if(!e.isTrusted)return;if(e.altKey&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();if(e.key==='ArrowLeft')prefs.x=Math.max(0,prefs.x-.05);if(e.key==='ArrowRight')prefs.x=Math.min(1,prefs.x+.05);if(e.key==='ArrowUp')prefs.y=Math.max(0,prefs.y-.05);if(e.key==='ArrowDown')prefs.y=Math.min(1,prefs.y+.05);position();save();}});
-  root.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('.preview').hidden){$('.preview').hidden=true;}else open(false);e.stopPropagation();}});
+  bubble.addEventListener('contextmenu',e=>{if(!e.isTrusted)return;e.preventDefault();visibility(true);});
+  root.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('.visibility-menu').hidden)visibility(false);else if(!$('.preview').hidden){$('.preview').hidden=true;$('[data-action="refresh"]').focus();}else if(!$('.settings').hidden){$('.settings').hidden=true;$('[data-action="settings"]').focus();}else open(false);e.preventDefault();e.stopPropagation();}});
   root.addEventListener('click',async e=>{
     if(!e.isTrusted)return;const target=e.target.closest('button');if(!target)return;
     if(target.dataset.filter){filter=target.dataset.filter;render();return;}
@@ -120,8 +138,10 @@
       case 'settings':$('.settings').hidden=!$('.settings').hidden;break;
       case 'expand':prefs.expanded=!prefs.expanded;position();save();break;
       case 'compact':prefs.compact=!prefs.compact;target.textContent=prefs.compact?'Use full bubble':'Use compact bubble';position();save();break;
-      case 'hide':host.hidden=true;opened=false;position();break;
-      case 'disable':await chrome.storage.local.set({[siteKey]:{disabled:true}});host.hidden=true;opened=false;position();break;
+      case 'visibility':visibility($('.visibility-menu').hidden);break;
+      case 'hide':await dismiss('tab');break;
+      case 'disable':await dismiss('site');break;
+      case 'global-hide':await dismiss('global');break;
       case 'refresh':scan();break;
       case 'preview-close':$('.preview').hidden=true;break;
       case 'download':case 'download-all':{
@@ -144,7 +164,8 @@
   for(const event of ['loadedmetadata','play','yt-navigate-finish'])document.addEventListener(event,playerChanged,true);
   window.addEventListener('popstate',playerChanged);window.addEventListener('hashchange',playerChanged);
   setInterval(()=>{if(opened&&!document.hidden)send({action:'discover-frames'});},2500);
-  chrome.runtime.onMessage.addListener((m,sender,reply)=>{if(sender.id!==chrome.runtime.id)return;if(m.action==='show-framekeep'){chrome.storage.local.remove(siteKey).catch(()=>{});host.hidden=false;position();open(true);reply({shown:true});}});
-  chrome.storage.local.get(['framekeepBubble',siteKey]).then(saved=>{const p=saved.framekeepBubble||{};prefs={x:Number.isFinite(p.x)?Math.max(0,Math.min(1,p.x)):1,y:Number.isFinite(p.y)?Math.max(0,Math.min(1,p.y)):.66,compact:!!p.compact,expanded:!!p.expanded};host.hidden=!!saved[siteKey]?.disabled;position();}).catch(position);
+  chrome.runtime.onMessage.addListener((m,sender,reply)=>{if(sender.id!==chrome.runtime.id||sender.tab)return;if(m.action==='show-framekeep'){chrome.runtime.sendMessage({target:'framekeep-widget-state',action:'restore'}).then(async result=>{if(result?.ok!==true)throw Error();await chrome.storage.local.remove([siteKey,'framekeepWidgetHidden']);tabHidden=siteDisabled=globallyHidden=false;applyVisibility();open(true);reply({shown:true});}).catch(()=>reply({shown:false}));return true;}});
+  chrome.storage.onChanged.addListener((changes,area)=>{if(area!=='local')return;if(changes[siteKey])siteDisabled=!!changes[siteKey].newValue?.disabled;if(changes.framekeepWidgetHidden)globallyHidden=!!changes.framekeepWidgetHidden.newValue;applyVisibility();});
+  Promise.all([chrome.storage.local.get(['framekeepBubble',siteKey,'framekeepWidgetHidden']),chrome.runtime.sendMessage({target:'framekeep-widget-state',action:'get'})]).then(([saved,session])=>{const p=saved.framekeepBubble||{};prefs={x:Number.isFinite(p.x)?Math.max(0,Math.min(1,p.x)):1,y:Number.isFinite(p.y)?Math.max(0,Math.min(1,p.y)):.66,compact:!!p.compact,expanded:!!p.expanded};siteDisabled=!!saved[siteKey]?.disabled;globallyHidden=!!saved.framekeepWidgetHidden;tabHidden=!!session?.hidden;applyVisibility();}).catch(()=>{host.hidden=false;position();});
   position();
 })();

@@ -40,8 +40,8 @@ function Assert-FramekeepPath([string]$Path) {
 }
 function Get-FramekeepFiles {
     $files = [ordered]@{}
-    foreach ($name in @('host.py','recycle.py','desktop.pyw','desktop_bridge.py','windows_identity.py','page_source.py','browser_sources.py','media_capture.py','podcast_audio.py','wrapped_hls.py','library_state.py','media_preview.py','study_adapter.py','framekeep_cli.py','framekeep_mcp.py','platforms.json')) { $files[$name] = "native\$name" }
-    foreach ($name in @('desktop.html','desktop.css','desktop.js','design.css','transport.js','ui-icons.js','shared.js','view.js')) { $files["ui\$name"] = "extension\$name" }
+    foreach ($name in @('host.py','recycle.py','desktop.pyw','desktop_bridge.py','windows_identity.py','page_source.py','browser_sources.py','media_capture.py','podcast_audio.py','wrapped_hls.py','library_state.py','media_preview.py','study_adapter.py','browser_transcription.py','streaming_engine.py','framekeep_cli.py','framekeep_mcp.py','platforms.json')) { $files[$name] = "native\$name" }
+    foreach ($name in @('desktop.html','desktop.css','desktop.js','desktop-model.js','design.css','transport.js','ui-icons.js','shared.js','view.js')) { $files["ui\$name"] = "extension\$name" }
     foreach ($name in @('icon48.png','icon128.png')) { $files["ui\icons\$name"] = "extension\icons\$name" }
     foreach ($name in @('framekeep.ico','framekeep-app.ico','icon128.png')) { $files[$name] = "extension\icons\$name" }
     return $files

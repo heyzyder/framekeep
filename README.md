@@ -2,7 +2,9 @@
 
 **Keep useful media close.** Download supported media from Chrome, find it in your Windows library, and return to the source, playback and available captions in one workspace.
 
-Windows / Chrome · 1.8.0-beta.2 · local storage · MIT original source
+Windows / Chrome · 1.8.0-beta.3 · local storage · MIT original source
+
+**Beta.3 verification:** the installed Windows app opened an existing generated live transcript, searched and sought its cues, exported SRT through the native dialog, and renamed a display title while preserving the original file. Browser live transcription remains **experimental**: local engine measurements and automated browser fixtures do not establish end-to-end Chrome capture. The current unpacked extension directory, reload, toolbar invocation and capture permission grant remain unverified. See the [current validation and limitations](docs/limitations.md#180-beta3-current-verification).
 
 ![Framekeep Desktop Library](docs/screenshots/desktop-library.png)
 
@@ -11,7 +13,8 @@ Framekeep combines a draggable Chrome media picker with a Windows Desktop app. T
 - Discover page images, direct video/audio and supported players. Preview, select and save a batch.
 - Save supported public video as MP4 or audio as MP3, with independent progress and cancellation.
 - Search the local Library, filter media, organize collections, play saved files and reopen sources.
-- Read available captions, search phrases, seek to timestamps and export transcripts.
+- Read existing generated transcripts or source captions, search phrases, seek to timestamps and export TXT, SRT or VTT when real timing is available.
+- Experimental: generate an incremental transcript of the selected tab with your compatible installed local speech model. Capture starts only after you press Start; the microphone is never requested.
 - Inspect the same durable job IDs from Desktop and the included CLI/MCP entry points.
 - Inspect optional prepared study evidence with source references and limitations. Preparation does not establish human review.
 
@@ -44,6 +47,14 @@ Desktop now opens to a media Library, with Activity and Settings one step away. 
 The floating picker offers Images, Video and Audio filters, previews and multiple selection. Original-copy mode retains metadata. Cleaning requires the optional compatible local sanitizer; a failed cleaning request never silently becomes an unclean saved result. Streaming/player cards open the existing format and quality controls.
 
 Finished files appear in **Library**. Open an item for playback and captions, use **Open file** for the system-associated application, or return to its source. **Activity** shows actual jobs and errors. Cancellation is offered where supported; downloads do not claim pause/resume. Reopening saved results never downloads them again.
+
+Create and rename collections from the sidebar, add multiple selected items, and rename an item's display title without changing its file. Collection removal keeps its media. Item removal hides it from Library; the separate Recycle Bin operation requires confirmation. Open an audio or video item to read its transcript alongside playback. The queue follows your visible collection order, with explicit Next, Previous, autoplay and repeat controls. Theater enlarges the player inside the app; fullscreen is a separate action.
+
+Settings includes theme, transcript size, playback defaults and notification choices. Help contains the skippable, replayable introduction. Existing installations receive a short explanation of changed controls.
+
+The experimental Chrome workflow starts with **Browser transcript** in the toolbar. **Live tab audio** uses the existing compatible local faster-whisper runtime and cached large-v3-turbo model. Text appears in incremental windows while audio continues playing. It records only the selected tab after Start, saves that recording and partial transcript in your library, and uses recording-relative timestamps. Seeking, switching source, navigation, detected ads, protected media, transport failure or excessive processing lag stops the capture with an explanation. **Site captions** and **Generate from whole media** remain separate choices. Whole-media generation requires a source the existing downloader can access.
+
+Hover or focus the page bubble's **×**, or right-click the bubble, for tab, site and all-sites visibility controls. Restore it through the toolbar's **Show page widget**. Hiding stops live transcription on that page; ordinary downloads continue. These choices preserve widget placement.
 
 ![Framekeep capture picker](docs/screenshots/extension-capture.png)
 

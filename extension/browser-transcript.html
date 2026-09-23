@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Framekeep · Browser transcript</title><link rel="stylesheet" href="browser-transcript.css"></head>
+<body><header><span class="brand">FRAMEKEEP</span><h1>Browser transcript</h1><p>Keep watching. Read along here.</p></header>
+<main>
+  <section class="choices" aria-label="Transcription methods">
+    <button id="siteCaptions" type="button"><strong>Use site captions</strong><span>Read the caption track the source provides.</span></button>
+    <button id="wholeMedia" type="button"><strong>Generate from accessible media</strong><span>Save the exposed audio and generate a whole-media transcript locally.</span></button>
+  </section>
+  <section class="live-card" aria-labelledby="liveTitle"><h2 id="liveTitle">Live transcription while playing</h2>
+    <p>Captures only the selected tab’s audio after Start. Audio stays audible. No microphone or system recording.</p>
+    <label for="language">Spoken language</label><select id="language"><option value="auto">Auto detect</option><option value="en">English</option><option value="vi">Vietnamese</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="zh">Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="pt">Portuguese</option><option value="ar">Arabic</option><option value="hi">Hindi</option></select>
+    <div class="actions"><button id="startLive" class="primary" type="button">Start selected tab</button><button id="stopLive" class="danger" type="button" hidden>Stop capture</button></div>
+    <label class="continue"><input id="continueHidden" type="checkbox"> Keep capturing when this panel closes <span>(REC stays visible; reopen here to Stop)</span></label>
+    <p id="liveStatus" role="status" aria-live="polite">Uses your installed local speech engine. Nothing starts until you choose Start.</p>
+    <p id="coverage" class="muted">Live times refer to recorded playback, including pauses, not the original page’s timeline. Navigation, seeking, advertisements or speed changes stop capture.</p>
+  </section>
+  <div class="result-head"><h2 id="resultTitle">Transcript</h2><button id="openDesktop" type="button">Open Desktop</button></div>
+  <p id="error" role="alert" hidden></p><p id="resultStatus" role="status"></p>
+  <label for="search">Find in transcript</label><input id="search" type="search" placeholder="Search words">
+  <div class="actions"><button id="copy" type="button">Copy text</button><button id="export" type="button">Export TXT</button></div>
+  <ol id="cues" aria-label="Settled transcript"></ol><p id="provisional" class="provisional" aria-label="Provisional transcript"></p>
+  <details><summary>Processing details</summary><p id="metrics">Latency is measured during capture on this computer.</p><p>Automatic wording and times are estimates. Only played audio is covered; silence may produce no text. A stopped capture remains available in the same Desktop library with its audio. Closing this panel stops capture unless you explicitly choose to keep capturing. Continuing capture keeps Chrome’s tab indicator and a red REC toolbar badge; reopen this panel to Stop.</p></details>
+</main><script type="module" src="browser-transcript-panel.js"></script></body></html>

@@ -16,7 +16,7 @@ for (const file of await readdir(new URL('extension/', root))) {
   const result = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('extension/' + file, root))], {encoding: 'utf8'});
   if (result.status !== 0) throw new Error(result.stderr || result.error?.message);
 }
-for (const page of ['desktop.html','popup.html']) {
+for (const page of ['desktop.html','popup.html','browser-transcript.html','browser-audio.html']) {
   const html = await readFile(new URL('extension/' + page, root), 'utf8');
   for (const match of html.matchAll(/(?:src|href)=["']([^"'#]+)["']/g)) {
     if (/^(?:https?:|data:|chrome:)/.test(match[1])) continue;

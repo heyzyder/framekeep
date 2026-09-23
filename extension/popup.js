@@ -127,7 +127,7 @@ function renderTranscript(state) {
   const ready = transcript.status === 'ready';
   text('transcript-badge', ready ? 'Ready' : transcript.status === 'loading' ? '…' : '—'); $('transcript-badge').classList.toggle('ready', ready);
   text('transcript-source', state.probe.info?.title || 'Captions load automatically when you check a video.');
-  const messages = {idle: 'Choose a video in Save video to see its transcript.', loading: 'Loading the video’s captions… You can download while this finishes.', unavailable: 'This video does not provide captions. There is no source transcript to display; speech-to-text is not enabled.', error: transcript.error};
+  const messages = {idle: 'Choose a video in Save video to see its transcript.', loading: 'Loading the video’s captions… You can download while this finishes.', unavailable: 'This video does not provide source captions. Open Browser transcript to generate text from live tab audio or accessible saved media with your installed local speech model.', error: transcript.error};
   text('transcript-message', messages[transcript.status] || ''); $('transcript-message').hidden = ready;
   $('transcript-retry').hidden = transcript.status !== 'error';
   const tracks = state.probe.info?.tracks || [];
@@ -234,7 +234,7 @@ $('url-form').addEventListener('submit', event => { event.preventDefault(); noti
 for (const name of ['save', 'transcript', 'history']) $(name + '-tab').onclick = () => setView(name);
 $('help-toggle').onclick = () => $('settings-dialog').showModal(); $('dialog-close').onclick = () => $('settings-dialog').close();
 $('expand').onclick = () => send('expand');
-$('sidebar').onclick = async () => { try { const window = await chrome.windows.getCurrent(); await chrome.sidePanel.open({windowId: window.id}); } catch { notice('Chrome could not open the sidebar. Use Open larger view instead.'); } };
+$('sidebar').onclick = async () => { try { const window = await chrome.windows.getCurrent(); await chrome.sidePanel.setOptions({path:'popup.html?view=panel',enabled:true}); await chrome.sidePanel.open({windowId: window.id}); } catch { notice('Chrome could not open the sidebar. Use Open larger view instead.'); } };
 $('recheck').onclick = () => send('check'); for (const id of ['folder']) $(id).onclick = () => { send('folder'); send('acknowledge'); };
 $('thumbnail').onerror = () => { $('thumbnail').hidden = true; }; $('clear').onclick = () => send('clear');
 function savePreferences() { send('settings', {kind, quality: videoQuality, audioQuality, notifications: $('notifications-toggle').checked}); }
@@ -266,13 +266,17 @@ $('desktop-handoff').onclick = () => send('desktop');
 if (desktop) $('desktop-handoff').hidden = true;
 
 // Restore the page widget, including a site on which it was disabled.
+import {openBrowserTranscriptPanel} from './browser-transcript-ui.js';
+if (!desktop) $('browserTranscriptOpen').onclick = () => openBrowserTranscriptPanel().catch(error => { $('bubble-feedback').textContent=error.message || 'Open a supported media tab and try again.'; });
+else $('browserTranscriptOpen').hidden=true;
 if (desktop) $('show-page-bubble').parentElement.hidden = true;
 else $('show-page-bubble').addEventListener('click', async () => {
   try {
     const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
     if (!tab?.id || !/^https?:\/\//.test(tab.url || '')) throw Error('Open a webpage first.');
     await chrome.scripting.executeScript({target:{tabId:tab.id},files:['capture-discovery.js','floating.js']});
-    await chrome.tabs.sendMessage(tab.id,{action:'show-framekeep'},{frameId:0});
+    const result=await chrome.tabs.sendMessage(tab.id,{action:'show-framekeep'},{frameId:0});
+    if(!result?.shown)throw Error('Widget did not restore');
     window.close();
   } catch { $('bubble-feedback').textContent='Refresh the webpage, then try again. Chrome internal pages do not allow the bubble.'; }
 });

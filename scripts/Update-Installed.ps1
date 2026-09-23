@@ -7,6 +7,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $app = Assert-FramekeepPath $InstallDirectory
 $receipt = Assert-FramekeepReceipt $app
 $null = Get-FramekeepExtensionId $root
+# An older daily install may never have written preferences. It still needs the
+# brief changed-controls introduction, not a first-install blocking tour.
+$preferences = Join-Path $app 'desktop-settings.json'
+if (-not (Test-Path -LiteralPath $preferences)) {
+    Write-FramekeepJson $preferences @{tourState='skipped';controlsIntroSeen=$false}
+}
 Copy-FramekeepFiles $root $app
 & (Join-Path $PSScriptRoot 'Build-Launcher.ps1') -Destination $app -Python $receipt.python
 $version = (Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version

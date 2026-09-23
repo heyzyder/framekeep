@@ -1,6 +1,7 @@
 import {createTransport} from './transport.js';
 import {duration, formatBytes, transferView} from './shared.js';
 import {icon as baseIcon} from './ui-icons.js';
+import {mediaKind, timestamp, validTiming, transcriptTracks, activeCueIndex, orderedItems, playableItems, safeMediaUrl} from './desktop-model.js';
 
 const $ = id => document.getElementById(id);
 const port = createTransport();
@@ -21,83 +22,127 @@ const text = (id, value = '') => { if ($(id).textContent !== String(value)) $(id
 const node = (tag, className, content) => { const item = document.createElement(tag); if (className) item.className = className; if (content !== undefined) item.textContent = content; return item; };
 const button = (label, className, action) => { const item = node('button', className, label); item.type = 'button'; item.onclick = action; return item; };
 const sourceHost = value => { try { return new URL(value).hostname.replace(/^www\./, ''); } catch { return ''; } };
-const safeUrl = value => { try { const url = new URL(value, location.href); return ['http:', 'https:', 'blob:', 'data:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
-const mediaKind = item => ['image', 'video', 'audio'].includes(item?.kind) ? item.kind : 'video';
+const safeUrl = safeMediaUrl;
 const dateLabel = value => { const date = new Date(value || 0); return Number.isFinite(date.valueOf()) && date.getFullYear() > 1970 ? date.toLocaleDateString(undefined, {month: 'short', day: 'numeric'}) : ''; };
 let state, view = 'library', type = 'all', collection = '', selectedId = null;
 let libraryKey, activityKey, collectionsKey, workspaceKey, captionsKey, evidenceKey, captureKey;
+let pendingSelectionId = null, pendingResultTab = null;
+let selection = new Set(), visibleItems = [], libraryScroll = 0, selectedTrackId = '', followCue = true, queueIds = [], queueCollectionId = '', queueOmissions = '', playOnLoad = false, lastCue = -1, actionHandler = null, tourStep = 0, guideOffered = false;
 let pendingDownload = false, pendingJobIds = new Set(), pendingCollection = null, toastTimer, captureRequested = false;
 
-function announce(message) {
-  text('toast', message); $('toast').hidden = false;
+function announce(message, actionLabel, action) {
+  text('toast', message); if(actionLabel&&action) $('toast').append(button(actionLabel,'toast-action',action)); $('toast').hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5500);
 }
 function error(message) { text('error-message', message); $('error-banner').hidden = !message; }
 function library() { return Array.isArray(state?.library) ? state.library : (state?.jobs || []).filter(job => job.status === 'complete' && !['missing', 'trashed'].includes(job.fileState)); }
 function setView(next, focus = true) {
   if (view === 'workspace' && next !== 'workspace') $('media-stage').querySelectorAll('video,audio').forEach(media => media.pause());
+  if (view === 'library' && next !== 'library') libraryScroll = $('main').scrollTop;
+  if (next !== 'workspace') document.body.classList.remove('theater');
   view = next;
-  for (const name of ['library', 'activity', 'settings', 'workspace']) $(name + '-view').hidden = name !== next;
-  for (const name of ['library', 'activity', 'settings']) {
+  for (const name of ['library', 'activity', 'settings', 'help', 'workspace']) $(name + '-view').hidden = name !== next;
+  for (const name of ['library', 'activity', 'settings', 'help']) {
     const active = name === next || name === 'library' && next === 'workspace';
     $('nav-' + name).classList.toggle('selected', active);
     if (active) $('nav-' + name).setAttribute('aria-current', 'page'); else $('nav-' + name).removeAttribute('aria-current');
   }
-  $('main').scrollTop = 0;
+  $('main').scrollTop = next === 'library' ? libraryScroll : 0;
   if (focus) $('main').focus({preventScroll: true});
   if (next === 'activity') send('acknowledge');
   if (next === 'library') renderLibrary();
 }
-function waveform() {
-  const wave = node('span', 'audio-glyph'); wave.setAttribute('aria-hidden', 'true');
-  for (const height of [10, 18, 29, 20, 39, 26, 44, 34, 20, 37, 26, 16, 23, 11]) { const bar = node('i'); bar.style.height = height + 'px'; wave.append(bar); }
-  return wave;
+function audioSymbol() { return icon('audio'); }
+function currentCollection() { return (state?.collections || []).find(entry => entry.id === collection); }
+function currentItem() { return state?.selectedItem?.id === selectedId ? state.selectedItem : library().find(item => item.id === selectedId); }
+function modal(title, body, confirm, handler) {
+  text('action-title', title); $('action-body').replaceChildren(body); text('confirm-action', confirm); $('confirm-action').hidden = !handler;
+  actionHandler = handler; $('action-dialog').showModal();
+  requestAnimationFrame(() => $('action-body').querySelector('input,select,button')?.focus());
+}
+function renameItem(item) {
+  const box = node('div'), label = node('label', '', 'Display title'), input = node('input'); input.id = 'rename-title'; input.value = item.title || item.filename || ''; input.maxLength = 240; input.required = true; label.htmlFor = input.id;
+  box.append(label, input, node('p', 'muted', 'The original filename and media file stay unchanged.'));
+  modal('Rename item', box, 'Save name', () => { if (input.value.trim()) send('rename-item', {id: item.id, title: input.value.trim()}); }); input.select();
+}
+function editCollection(entry) {
+  const box = node('div'), label = node('label', '', 'Collection name'), input = node('input'); input.id = 'collection-name'; input.value = entry?.name || ''; input.maxLength = 80; input.required = true; label.htmlFor = input.id; box.append(label, input);
+  modal(entry ? 'Rename collection' : 'Create collection', box, entry ? 'Save name' : 'Create', () => send(entry ? 'collection-rename' : 'collection-create', {...(entry ? {id:entry.id} : {}), name: input.value.trim()}));
+}
+function organizeItems(ids) {
+  const body = node('div', 'membership-list'), groups = state?.collections || [], inputs = [];
+  body.append(node('p', 'muted', `${ids.length} selected item${ids.length === 1 ? '' : 's'}. Check to add all; uncheck to remove all. Mixed collections stay unchanged until selected.`));
+  for (const group of groups) {
+    const label = node('label', 'toggle-label'), input = node('input'); input.type = 'checkbox'; const count = ids.filter(id => group.itemIds.includes(id)).length; input.checked = count === ids.length; input.indeterminate = count > 0 && count < ids.length; input.dataset.changed = 'false'; input.onchange = () => {input.dataset.changed = 'true';}; label.append(input, node('span', '', group.name)); body.append(label); inputs.push([group,input]);
+  }
+  if (!groups.length) body.append(node('p', '', 'Create a collection using ＋ in the sidebar, then organize your items.'));
+  modal('Organize items', body, 'Save memberships', () => { for (const [group,input] of inputs) if (input.dataset.changed === 'true') send('collection-membership', {collectionId:group.id,itemIds:ids,remove:!input.checked}); });
+}
+function confirmRemoval(item, disk) {
+  const message = node('p', '', disk ? 'Move this original file to the Windows Recycle Bin? You can restore it from the Recycle Bin. Other collection items stay in place.' : 'Remove this item from Framekeep Library? The original file stays on disk.');
+  modal(disk ? 'Move file to Recycle Bin?' : 'Remove from library?', message, disk ? 'Move to Recycle Bin' : 'Remove from library', () => { send(disk ? 'trash-item' : 'remove-item', {id:item.id,...(disk ? {confirmed:true} : {})}); selection.delete(item.id); if(!disk)announce('Library removal requested. The original file stays on disk.','Undo',()=>{send('restore-item',{id:item.id});announce('Restoring library item…');}); if (selectedId === item.id) setView('library'); });
+}
+function itemMenu(item) {
+  const body = node('div', 'action-menu');
+  const act = (label, action, disabled=false) => { const control = button(label, 'menu-action', () => { $('action-dialog').close(); action(); }); control.disabled = disabled; body.append(control); };
+  act('Rename display title', () => renameItem(item)); act('Add or remove collections', () => organizeItems([item.id]));
+  act('Open file', () => send('open-item',{id:item.id}), item.fileState === 'missing'); act('Open source', () => send('open-source',{id:item.id}), !item.sourceUrl); act('Open containing folder', () => send('open-folder',{id:item.id}));
+  if (collection) act('Remove from this collection', () => send('collection-membership',{collectionId:collection,itemIds:[item.id],remove:true}));
+  body.append(node('hr')); act('Remove from library…', () => confirmRemoval(item,false)); act('Move file to Recycle Bin…', () => confirmRemoval(item,true));
+  modal(item.title || 'Item actions', body, '', null);
+}
+function collectionMenu(entry) {
+  const body = node('div','action-menu');
+  body.append(button('Rename collection','menu-action',() => {$('action-dialog').close(); editCollection(entry);}),button('Delete collection…','menu-action',() => {$('action-dialog').close(); modal('Delete collection?',node('p','',`Delete “${entry.name}”? Its media files and library items will be kept.`),'Delete collection',() => {send('collection-delete',{id:entry.id}); if(collection === entry.id) {collection='';setView('library');}});}));
+  modal(entry.name,body,'',null);
 }
 function renderCollections() {
-  const names = [...new Set(library().map(item => item.collection).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  const key = JSON.stringify([names, collection]); if (key === collectionsKey) return; collectionsKey = key;
-  $('collection-hint').hidden = names.length > 0;
-  $('collections').replaceChildren(...names.map(name => {
-    const entry = button('', 'collection-nav' + (collection === name ? ' selected' : ''), () => { collection = collection === name ? '' : name; setView('library'); renderCollections(); });
-    entry.append(node('span', '', name)); entry.setAttribute('aria-pressed', String(collection === name)); entry.title = name; return entry;
+  const groups = state?.collections || [];
+  const key = JSON.stringify([groups, collection]); if (key === collectionsKey) return; collectionsKey = key;
+  $('collection-hint').hidden = groups.length > 0;
+  $('collections').replaceChildren(...groups.map(group => {
+    const row = node('div','collection-row');
+    const entry = button('', 'collection-nav' + (collection === group.id ? ' selected' : ''), () => { collection = collection === group.id ? '' : group.id; $('sort-order').value = collection ? 'collection' : 'recent'; libraryScroll=0; setView('library'); renderCollections(); });
+    entry.append(node('span','',group.name)); entry.setAttribute('aria-pressed',String(collection === group.id)); entry.title=group.name;
+    const menu=button('⋯','icon-button collection-menu',()=>collectionMenu(group)); menu.setAttribute('aria-label',`Actions for ${group.name}`); row.oncontextmenu=event=>{event.preventDefault();collectionMenu(group);}; row.append(entry,menu);return row;
   }));
-  $('collection-options').replaceChildren(...names.map(name => { const option = node('option'); option.value = name; return option; }));
+  $('collection-options').replaceChildren(...groups.map(group => {const option=node('option');option.value=group.name;return option;}));
+}
+function renderSelection() {
+  text('selection-count',selection.size ? `${selection.size} selected` : ''); $('organize-selection').hidden=$('clear-selection').hidden=!selection.size;
+  for(const card of $('library-grid').children) {const checked=selection.has(card.dataset.itemId);card.classList.toggle('is-selected',checked);card.querySelector('input[type=checkbox]').checked=checked;}
+}
+function previewFor(item, className = 'card-preview') {
+  const kind=mediaKind(item), preview=node('div',className+' '+kind), thumbnail=safeUrl(item.thumbnailUrl || item.artworkUrl), url=safeUrl(item.previewUrl);
+  if(thumbnail || kind === 'image' && url) {const img=node('img');img.src=thumbnail || url;img.alt='';img.loading='lazy';img.referrerPolicy='no-referrer';img.onerror=()=>{img.remove();preview.prepend(icon(kind));};preview.append(img);}
+  else if(kind === 'video' && url) {const video=node('video');video.src=url;video.preload='metadata';video.muted=true;video.playsInline=true;video.tabIndex=-1;video.setAttribute('aria-hidden','true');video.onloadedmetadata=()=>{if(video.duration>.2)video.currentTime=.2;};video.onerror=()=>{video.remove();preview.prepend(icon('video'));};preview.append(video);}
+  else preview.append(icon(kind === 'unknown' ? 'folder' : kind));
+  return preview;
 }
 function renderLibrary() {
-  if (!state) return;
-  const query = $('library-search').value.trim().toLocaleLowerCase();
-  const all = library();
-  const items = all.filter(item => (type === 'all' || mediaKind(item) === type) && (!collection || item.collection === collection) && (!query || [item.title, item.filename, item.sourceUrl, item.collection].filter(Boolean).join(' ').toLocaleLowerCase().includes(query)));
-  const sort = $('sort-order').value;
-  items.sort((a, b) => sort === 'title' ? (a.title || a.filename || '').localeCompare(b.title || b.filename || '') : sort === 'oldest' ? (a.finished || a.created || 0) - (b.finished || b.created || 0) : (b.finished || b.created || 0) - (a.finished || a.created || 0));
-  text('library-title', collection || 'Library');
-  text('library-subtitle', collection ? 'A collection from your saved library.' : 'A place for things worth coming back to.');
-  text('visible-count', `${items.length} item${items.length === 1 ? '' : 's'}`);
-  $('library-loading').hidden = true; $('library-empty').hidden = all.length > 0; $('library-no-results').hidden = all.length === 0 || items.length > 0; $('library-grid').hidden = !items.length;
-  const key = JSON.stringify(items); if (key === libraryKey) return; libraryKey = key;
-  $('library-grid').replaceChildren(...items.map(item => {
-    const kind = mediaKind(item), card = button('', 'media-card', () => selectItem(item.id));
-    card.dataset.itemId = item.id; card.setAttribute('aria-label', `Open ${item.title || item.filename}, ${kind}`);
-    const preview = node('div', 'card-preview ' + kind);
-    const url = safeUrl(item.thumbnailUrl || item.previewUrl);
-    if (url && kind === 'image') {
-      const image = node('img'); image.src = url; image.loading = 'lazy'; image.alt = ''; image.referrerPolicy = 'no-referrer';
-      image.onerror = () => { image.remove(); preview.prepend(icon('image')); }; preview.append(image);
-    } else if (url && kind === 'video') {
-      const video = node('video'); video.src = url; video.preload = 'metadata'; video.muted = true; video.playsInline = true; video.tabIndex = -1; video.setAttribute('aria-hidden', 'true');
-      video.onloadedmetadata = () => { if (Number.isFinite(video.duration) && video.duration > .2) video.currentTime = Math.min(.2, video.duration / 2); };
-      video.onerror = () => { video.remove(); preview.prepend(icon('video')); }; preview.append(video);
-    } else preview.append(kind === 'audio' ? waveform() : icon(kind));
-    preview.append(node('span', 'card-kind', kind));
-    if (Number.isFinite(item.duration)) preview.append(node('span', 'card-duration', duration(item.duration)));
-    const copy = node('div', 'card-copy'), title = node('h2', 'card-title', item.title || item.filename || 'Saved media'); title.title = title.textContent;
-    const meta = node('p', 'card-subtitle'); meta.append(node('span', '', sourceHost(item.sourceUrl) || formatBytes(item.bytes) || 'Saved locally'), node('span', '', dateLabel(item.finished || item.created)));
-    copy.append(title, meta); if (item.collection) copy.append(node('p', 'card-collection', item.collection));
-    card.append(preview, copy); return card;
-  }));
+  if(!state)return;
+  const query=$('library-search').value.trim().toLocaleLowerCase(), all=library(), group=currentCollection();
+  const items=orderedItems(all,group,$('sort-order').value).filter(item=>(type==='all'||mediaKind(item)===type)&&(!query||[item.title,item.filename,item.sourceUrl].filter(Boolean).join(' ').toLocaleLowerCase().includes(query))); visibleItems=items;
+  text('library-title',group?.name || 'Library');text('library-subtitle',group ? 'Your collection · media files stay in Library when removed from this collection.' : 'A place for things worth coming back to.'); text('visible-count',`${items.length} item${items.length===1?'':'s'}`);
+  $('library-loading').hidden=true;$('library-empty').hidden=all.length>0||Boolean(group);$('library-no-results').hidden=items.length>0||(!all.length&&!group);$('library-grid').hidden=!items.length;
+  $('play-collection').hidden=!group||!playableItems(orderedItems(all,group,'collection')).some(item=>mediaKind(item)==='video');$('select-all').hidden=!items.length;
+  const key=JSON.stringify([items,collection,$('sort-order').value]); if(key===libraryKey){renderSelection();return;}libraryKey=key;
+  $('library-grid').replaceChildren(...items.map(item=>{
+    const kind=mediaKind(item), card=node('article','media-card');card.dataset.itemId=item.id;card.tabIndex=0;card.setAttribute('aria-label',`${item.title||item.filename}, ${kind}`);
+    const open=button('','card-open',()=>selectItem(item.id));open.setAttribute('aria-label',`Open ${item.title||item.filename}`);const preview=previewFor(item);preview.append(node('span','card-kind',kind));if(Number.isFinite(item.duration))preview.append(node('span','card-duration',timestamp(item.duration)));open.append(preview);
+    const copy=node('div','card-copy'), title=node('h2','card-title',item.title||item.filename||'Saved media');title.title='Double-click to rename';title.tabIndex=0;title.ondblclick=()=>renameItem(item);title.onkeydown=event=>{if(event.key==='F2'){event.preventDefault();event.stopPropagation();renameItem(item);}};
+    const meta=node('p','card-subtitle');meta.append(node('span','',sourceHost(item.sourceUrl)||formatBytes(item.bytes)||'Saved locally'),node('span','',dateLabel(item.finished||item.created)));copy.append(title,meta);
+    if(group&&$('sort-order').value==='collection'){const order=node('div','card-order');for(const [label,delta] of [['↑',-1],['↓',1]]){const move=button(label,'text-button',()=>moveCollectionItem(group,item.id,delta));move.setAttribute('aria-label',`Move ${item.title||item.filename} ${delta<0?'earlier':'later'} in collection`);const at=group.itemIds.indexOf(item.id);move.disabled=at+delta<0||at+delta>=group.itemIds.length;order.append(move);}copy.append(order);}
+    const controls=node('div','card-controls'), choose=node('input');choose.type='checkbox';choose.setAttribute('aria-label',`Select ${item.title||item.filename}`);choose.onchange=()=>{choose.checked?selection.add(item.id):selection.delete(item.id);renderSelection();};
+    const menu=button('⋯','icon-button',()=>itemMenu(item));menu.setAttribute('aria-label',`Actions for ${item.title||item.filename}`);controls.append(choose,button('Open','text-button',()=>selectItem(item.id)),menu);copy.append(controls);card.append(open,copy);
+    card.oncontextmenu=event=>{event.preventDefault();itemMenu(item);};card.onkeydown=event=>{if(event.target!==card)return;if(event.key==='F2'){event.preventDefault();renameItem(item);}if(event.key==='Enter'){selectItem(item.id);}if(event.key===' '){event.preventDefault();selection.has(item.id)?selection.delete(item.id):selection.add(item.id);renderSelection();}};return card;
+  }));renderSelection();
 }
-function selectItem(id) {
-  selectedId = id; workspaceKey = captionsKey = evidenceKey = null;
+function moveCollectionItem(group,id,delta){const ids=[...group.itemIds],from=ids.indexOf(id),to=from+delta;if(from<0||to<0||to>=ids.length)return;ids.splice(from,1);ids.splice(to,0,id);send('collection-reorder',{id:group.id,itemIds:ids});}
+function selectItem(id, resultTab = null) {
+  pendingResultTab=resultTab;
+  selectedTrackId = ''; followCue = true; lastCue = -1; reviewTab('captions');
+  selectedId = id; pendingSelectionId=id; workspaceKey = captionsKey = evidenceKey = null;
   $('caption-search').value = ''; text('collection-feedback', ''); pendingCollection = null;
   send('select-item', {id});
   setView('workspace');
@@ -109,56 +154,103 @@ function renderWorkspace(item) {
   text('item-meta', [formatBytes(item.bytes), dateLabel(item.finished || item.created)].filter(Boolean).join(' · ')); text('item-filename', item.filename || '');
   text('item-id', item.id || ''); text('item-source', item.sourceUrl || 'No source link was recorded for this local file.');
   $('open-source').disabled = !item.sourceUrl; $('open-source').title = item.sourceUrl || 'No source link was recorded';
-  if (document.activeElement !== $('item-collection')) $('item-collection').value = item.collection || '';
+  if (document.activeElement !== $('item-collection')) $('item-collection').value = (state.collections||[]).filter(group=>group.itemIds.includes(item.id)).map(group=>group.name).join(', ');
   if (pendingCollection !== null && item.collection === pendingCollection) { text('collection-feedback', item.collection ? `Saved to ${item.collection}.` : 'Removed from collection.'); pendingCollection = null; }
+  $('image-zoom').hidden = mediaKind(item)!=='image';
+  $('theater-mode').hidden = !['audio','video'].includes(mediaKind(item)); $('fullscreen-media').hidden = mediaKind(item) !== 'video';
+  text('theater-mode', document.body.classList.contains('theater') ? 'Exit theater' : 'Theater');
+  $('theater-mode').setAttribute('aria-pressed',String(document.body.classList.contains('theater')));
   const key = JSON.stringify([item.id, item.previewUrl, item.kind]);
   if (key !== workspaceKey) {
     workspaceKey = key; $('preview-error').hidden = true;
     const kind = mediaKind(item), url = safeUrl(item.previewUrl);
     $('media-stage').replaceChildren();
-    if (url) {
+    if (url && kind !== 'unknown') {
       const media = node(kind === 'image' ? 'img' : kind); media.src = url;
-      if (kind === 'image') media.alt = item.title || item.filename || 'Saved image';
+      if (kind === 'image') { media.alt = item.title || item.filename || 'Saved image'; media.tabIndex=0; media.title='Click or press Enter to zoom'; const zoom=()=>{media.classList.toggle('zoomed');text('image-zoom',media.classList.contains('zoomed')?'Fit image':'Zoom image');}; media.onclick=zoom; media.onkeydown=e=>{if(e.key==='Enter')zoom();}; }
       else { media.controls = true; media.preload = 'metadata'; media.setAttribute('aria-label', `${kind === 'video' ? 'Video' : 'Audio'} player for ${item.title || item.filename}`); }
       media.onerror = () => { $('preview-error').hidden = false; };
-      if (kind === 'audio') { const art = node('div', 'audio-stage'); art.append(waveform(), node('p', '', 'Original audio')); $('media-stage').append(art); }
+      if (kind === 'audio') { const art = node('div', 'audio-stage'), artwork=safeUrl(item.artworkUrl||item.thumbnailUrl); if(artwork){const cover=node('img');cover.src=artwork;cover.alt='Audio artwork';cover.className='audio-artwork';cover.onerror=()=>cover.replaceWith(audioSymbol());art.append(cover);}else art.append(audioSymbol()); art.append(node('p', '', 'Original audio')); $('media-stage').append(art); }
       $('media-stage').append(media);
+      if(kind !== 'image') {media.ontimeupdate=updateCurrentCue;media.onended=onMediaEnded;media.onloadedmetadata=()=>{if(playOnLoad){playOnLoad=false;media.play().catch(()=>announce('Press Play to start this item.'));}};}
     } else { const placeholder = node('div', 'preview-placeholder'); placeholder.append(icon(kind), node('p', '', 'Preview is unavailable for this file. Open it with your Windows app.')); $('media-stage').append(placeholder); }
   }
-  renderCaptions(item); renderEvidence(item);
+  renderCaptions(item); renderEvidence(item); renderFrames(item); renderQueue();
+  if(pendingResultTab&&pendingSelectionId!==item.id){const processing=state?.study?.sourceItemId===item.id?state.study:item.study;if(pendingResultTab==='frames'&&$('review-frames').hidden&&processing?.status==='loading'){reviewTab('evidence');}else{const target=pendingResultTab==='frames'&&$('review-frames').hidden?'evidence':pendingResultTab;reviewTab(target);if(target==='evidence')$('processing-details').open=true;pendingResultTab=null;}}
+  const transcriptApplicable=['audio','video'].includes(mediaKind(item))&&item.capabilities?.hasAudio!==false;
+  $('review-captions').hidden=!transcriptApplicable;
+  if(!transcriptApplicable&&$('review-captions').getAttribute('aria-selected')==='true')reviewTab($('review-frames').hidden?'evidence':'frames');
+  document.querySelector('.review-panel').hidden=['image','unknown'].includes(mediaKind(item))&&!item.artifacts?.length&&$('review-frames').hidden;
+  document.querySelector('.workspace-layout').classList.toggle('preview-only',document.querySelector('.review-panel').hidden);
 }
-function transcriptFor(item) { return item?.transcript || {status: 'idle'}; }
+function selectedTranscript(item) {
+  const tracks=transcriptTracks(item);
+  return tracks.find(track=>track.id===selectedTrackId)||tracks.find(track=>track.id===item?.transcript?.id)||tracks.find(track=>['generated-transcription','generated','generated-live','browser-live'].includes(track.source))||tracks[0]||item?.transcript||{status:'idle'};
+}
 function renderCaptions(item) {
-  const transcript = transcriptFor(item), ready = transcript.status === 'ready', cues = Array.isArray(transcript.cues) ? transcript.cues : [];
-  const key = JSON.stringify([item.id, transcript, $('caption-search').value]); if (key === captionsKey) return; captionsKey = key;
-  const labels = {'source-captions': 'Source captions', 'sidecar-captions': 'Saved sidecar captions', 'generated-transcription': 'Generated transcription'};
-  const origin = labels[transcript.source] || 'Source captions';
-  const hasLanguage = value => Boolean(value && String(value).toLowerCase() !== 'und');
-  text('caption-provenance', ready ? `${origin}${transcript.automatic ? ' · automatically captioned by the source' : ''}${hasLanguage(transcript.language) ? ' · ' + transcript.language : ''}. Check against the original.` : 'Captions come from the source or a saved caption file. They are separate from generated transcription.');
-  text('caption-message', ready ? '' : transcript.status === 'loading' ? 'Loading available captions…' : transcript.status === 'error' ? transcript.error || 'Captions could not be loaded. Check the source and try again.' : transcript.status === 'unavailable' ? 'No source captions are available for this item. You can still play and reopen the original media.' : mediaKind(item) === 'image' ? 'Images do not have a caption timeline.' : item.sourceUrl ? 'Check the original source for available captions.' : 'No captions or source link were recorded for this file.');
-  $('caption-message').hidden = ready;
-  $('load-captions').hidden = ready || transcript.status === 'loading' || mediaKind(item) === 'image' || !item.sourceUrl;
-  text('load-captions', transcript.status === 'error' ? 'Retry source captions' : 'Check source captions');
-  $('caption-tools').hidden = !ready;
-  const tracks = transcript.tracks || item.tracks || [];
-  const languages = tracks.length ? tracks : [{language: transcript.language || '', name: transcript.language || 'Available captions'}];
-  $('caption-language').replaceChildren(...languages.map(track => { const option = node('option', '', hasLanguage(track.language) ? track.name || track.label || track.language : 'Language not specified'); option.value = track.language; return option; }));
-  $('caption-language').value = transcript.language || ''; $('caption-language').disabled = languages.length < 2;
-  const query = $('caption-search').value.trim().toLocaleLowerCase();
-  const matches = cues.filter(cue => !query || String(cue.text || '').toLocaleLowerCase().includes(query));
-  text('caption-count', `${matches.length} ${query ? 'match' + (matches.length === 1 ? '' : 'es') : 'segment' + (matches.length === 1 ? '' : 's')}`);
-  $('caption-cues').replaceChildren(...matches.map(cue => {
-    const row = node('div', 'caption-cue'); const stamp = button(duration(Number(cue.start) || 0), 'cue-time', () => {
-      const media = $('media-stage').querySelector('video,audio');
-      if (media) { media.currentTime = Number(cue.start) || 0; media.focus(); announce(`Moved to ${duration(Number(cue.start) || 0)}. Press play to continue.`); }
-      else { announce('Open the media file to play this timestamp.'); }
-    }); stamp.setAttribute('aria-label', `Seek to ${duration(Number(cue.start) || 0)}`); stamp.disabled = !item.previewUrl || mediaKind(item) === 'image';
-    const copy = node('p'); const value = String(cue.text || '');
-    if (query) { let offset = 0, index; const lower = value.toLocaleLowerCase(); while ((index = lower.indexOf(query, offset)) >= 0) { copy.append(document.createTextNode(value.slice(offset, index)), node('mark', '', value.slice(index, index + query.length))); offset = index + query.length; } copy.append(document.createTextNode(value.slice(offset))); }
-    else copy.textContent = value;
-    row.append(stamp, copy); return row;
+  if(!item)return;
+  if(pendingSelectionId===item.id){$('transcript-generation').hidden=true;$('caption-tools').hidden=true;$('load-captions').hidden=true;$('caption-cues').replaceChildren();$('caption-message').hidden=false;text('caption-message','Loading saved transcripts…');captionsKey=null;return;}
+  const transcript=selectedTranscript(item), tracks=transcriptTracks(item), ready=Boolean(transcript.cues?.length||transcript.text), study=(state?.study?.sourceItemId===item.id?state.study:item.study)||{};
+  const running=['loading','running','queued','starting'].includes(study.status)||['planned','submitted','queued','running'].includes(study.state);
+  const hasGenerated=tracks.some(track=>['generated-transcription','generated','generated-live','browser-live'].includes(track.source));
+  const compactTranscript=hasGenerated&&!running&&!study.canResume;
+  $('transcript-generation').hidden=compactTranscript;
+  if(compactTranscript){$('transcript-secondary').append($('generation-status'),$('load-captions'));}
+  else {$('transcript-generation').append($('generation-status'));$('captions-panel').insertBefore($('load-captions'),$('caption-tools'));}
+  $('media-stage').classList.toggle('audio-media-stage',mediaKind(item)==='audio');
+  $('generate-transcript').hidden=hasGenerated||!['audio','video'].includes(mediaKind(item))||item.capabilities?.hasAudio===false;
+  $('generate-transcript').disabled=running||item.capabilities?.speech!==true;
+  $('transcription-setup').hidden=hasGenerated||running||$('generate-transcript').hidden||item.capabilities?.speech===true;
+  $('cancel-transcript').hidden=!running||study.canCancel!==true;$('retry-transcript').hidden=!study.canResume;
+  text('generation-status',running ? (study.canCancel===false ? 'Generating on this computer. This processor does not support cancellation; you can keep using Library.' : 'Generating on this computer…') : study.error || item.transcriptError || (hasGenerated ? 'Generated text may contain errors. Original outputs and review status are in Processing details.' : '') || (!hasGenerated && ['audio','video'].includes(mediaKind(item)) ? item.capabilities?.speech ? 'Uses the installed local speech engine. Existing results are reused.' : item.capabilities?.reason || 'Local transcription is unavailable. See Settings for connection and setup help.' : ''));
+  const key=JSON.stringify([item.id,transcript,tracks,$('caption-search').value]);if(key===captionsKey)return;captionsKey=key;
+  const labels={'source-captions':'Source captions','sidecar-captions':'Imported captions','generated-transcription':'Generated transcript','generated':'Generated transcript','imported':'Imported transcript','browser-live':'Live capture','generated-live':'Generated live transcript'};
+  const origin=labels[transcript.source]||transcript.source||'Transcript', coverage=typeof transcript.coverage==='string'?transcript.coverage:transcript.coverage?.description || (transcript.sourceTiming===false?'Captured audio only · not a complete original-site timeline':'');
+  text('caption-provenance',ready?[origin,transcript.language&&transcript.language!=='und'?transcript.language:'Language unspecified',coverage].filter(Boolean).join(' · '):'Source captions, imported captions and generated text appear here as separate tracks.');
+  text('caption-message',ready?'':transcript.status==='loading'?'Loading transcript…':transcript.error||(['image','unknown'].includes(mediaKind(item))?'This item has no audio transcript.':'No transcript is available yet. Check source captions or generate one when local speech is available.'));
+  $('caption-message').hidden=ready;$('load-captions').hidden=!item.sourceUrl||['image','unknown'].includes(mediaKind(item))||transcript.status==='loading';$('caption-tools').hidden=!ready;
+  $('caption-language').replaceChildren(...tracks.map(track=>{const option=node('option','',[labels[track.source]||track.source||'Transcript',track.language&&track.language!=='und'?track.language:'Language unspecified',track.label].filter(Boolean).join(' · '));option.value=track.id;return option;}));$('caption-language').value=transcript.id||'';$('caption-language').disabled=tracks.length<2;
+  const cues=transcript.cues?.length?transcript.cues:[{text:transcript.text||''}], query=$('caption-search').value.trim().toLocaleLowerCase(), matches=cues.map((cue,index)=>({cue,index})).filter(({cue})=>!query||String(cue.text||'').toLocaleLowerCase().includes(query));
+  const timed=cues.length>0&&cues.every(validTiming)&&transcript.timed!==false;
+  for(const option of $('export-format').options)option.disabled=option.value!=='txt'&&!timed;
+  if(!timed)$('export-format').value='txt';$('export-format').title=timed?'Export timed or plain text':'Timed export needs original, valid start and end timestamps.';
+  text('caption-count',`${matches.length} ${query?'matches':'segments'}`);
+  $('caption-cues').replaceChildren(...matches.map(({cue,index})=>{
+    const row=node('div','caption-cue');row.dataset.cueIndex=index;
+    const timing=validTiming(cue)&&transcript.timed!==false;
+    const stamp=button(timing?timestamp(cue.start):'—','cue-time',()=>{const media=$('media-stage').querySelector('video,audio');if(media){media.currentTime=cue.start;followCue=true;$('follow-cue').hidden=true;updateCurrentCue();}});stamp.disabled=!timing||!item.previewUrl;stamp.setAttribute('aria-label',timing?`Seek to ${timestamp(cue.start)}`:'No source timestamp');
+    const copy=node('p'), value=String(cue.text||'');if(query){let offset=0,index;const lower=value.toLocaleLowerCase();while((index=lower.indexOf(query,offset))>=0){copy.append(document.createTextNode(value.slice(offset,index)),node('mark','',value.slice(index,index+query.length)));offset=index+query.length;}copy.append(document.createTextNode(value.slice(offset)));}else copy.textContent=value;
+    row.append(stamp,copy);return row;
   }));
-  if (ready && !matches.length) $('caption-cues').append(node('p', 'caption-no-match', query ? 'No caption segments match this search.' : 'This caption file contains no readable segments.'));
+  if(ready&&!matches.length)$('caption-cues').append(node('p','caption-no-match','No transcript segments match this search.'));
+  lastCue=-1;updateCurrentCue();
+}
+function updateCurrentCue() {
+  const media=$('media-stage').querySelector('video,audio'),track=selectedTranscript(currentItem());if(!media||track.timed===false)return;
+  const index=activeCueIndex(track.cues||[],media.currentTime);if(index===lastCue)return;lastCue=index;
+  for(const row of $('caption-cues').children){const active=Number(row.dataset.cueIndex)===index;row.classList.toggle('current-cue',active);if(active){row.setAttribute('aria-current','true');if(followCue)row.scrollIntoView({block:'nearest',behavior:'instant'});}else row.removeAttribute('aria-current');}
+}
+function pauseFollowing() {followCue=false;$('follow-cue').hidden=false;}
+function renderQueue() {
+  const container=$('playback-queue');container.hidden=!queueIds.length;if(!queueIds.length)return;
+  const items=queueIds.map(id=>library().find(item=>item.id===id)), index=queueIds.indexOf(selectedId),head=node('div','queue-heading');
+  head.append(node('strong','',`Collection queue · ${index+1} / ${queueIds.length}`),button('Previous','text-button',()=>advanceQueue(-1)),button('Next','text-button',()=>advanceQueue(1)));head.children[1].disabled=index<=0&&state.settings?.repeat!=='all';head.children[2].disabled=index===queueIds.length-1&&state.settings?.repeat!=='all';
+  const list=node('ol','queue-list');items.forEach((item,pos)=>{const row=node('li',item?.id===selectedId?'current':'');const open=button(item?.title||item?.filename||'Missing file','queue-item',()=>{if(item){playOnLoad=true;selectItem(item.id);}});open.disabled=!item||item.fileState==='missing';row.append(open);for(const [label,delta]of [['↑',-1],['↓',1]]){const move=button(label,'text-button',()=>moveQueue(pos,pos+delta));move.disabled=pos+delta<0||pos+delta>=items.length;move.setAttribute('aria-label',`Move ${item?.title||'item'} ${delta<0?'earlier':'later'}`);row.append(move);}row.draggable=true;row.ondragstart=event=>event.dataTransfer.setData('text/plain',String(pos));row.ondragover=event=>event.preventDefault();row.ondrop=event=>{event.preventDefault();const from=Number(event.dataTransfer.getData('text/plain'));if(Number.isInteger(from))moveQueue(from,pos);};list.append(row);});
+  const preference=node('label','toggle-label'),toggle=node('input');toggle.type='checkbox';toggle.checked=state.settings?.autoplayNext===true;toggle.onchange=()=>send('settings',{autoplayNext:toggle.checked});preference.append(toggle,node('span','','Autoplay next'));container.replaceChildren(head,list,preference);if(queueOmissions)container.append(node('p','muted',queueOmissions));
+}
+function moveQueue(from,to){if(from<0||to<0||from>=queueIds.length||to>=queueIds.length)return;const [id]=queueIds.splice(from,1);queueIds.splice(to,0,id);const group=(state.collections||[]).find(entry=>entry.id===queueCollectionId);if(group){let next=0;const ordered=group.itemIds.map(id=>queueIds.includes(id)?queueIds[next++]:id);send('collection-reorder',{id:group.id,itemIds:ordered});}renderQueue();}
+function advanceQueue(delta,autoplay=true){let index=queueIds.indexOf(selectedId)+delta;if(state.settings?.repeat==='all')index=(index+queueIds.length)%queueIds.length;const item=library().find(entry=>entry.id===queueIds[index]);if(item&&playableItems([item]).length){playOnLoad=autoplay;selectItem(item.id);}else if(index>=0&&index<queueIds.length)announce('This queued file is missing or cannot play. Choose another item.');}
+function onMediaEnded(){const media=$('media-stage').querySelector('video,audio');if(state.settings?.repeat==='one'){media.currentTime=0;media.play().catch(()=>{});}else if(state.settings?.autoplayNext)advanceQueue(1);}
+function renderFrames(item) {
+  const study=state?.study?.sourceItemId===item.id?state.study:item.study;
+  const frames=(item.frames||study?.frames||[]).filter(frame=>safeUrl(frame.previewUrl));
+  $('review-frames').hidden=!frames.length;
+  const running=['loading','running','queued'].includes(study?.status)||['planned','submitted','queued','running'].includes(study?.state);
+  $('generate-frames').hidden=!item.capabilities?.visual||frames.length>0;$('generate-frames').disabled=running;
+  text('frame-generation-status',item.capabilities?.visual&&running?'Processing locally. Available frames will appear beside playback.':'');
+  if(!frames.length){if($('review-frames').getAttribute('aria-selected')==='true')reviewTab('captions');$('frames-list').replaceChildren();return;}
+  const key=JSON.stringify(frames);if($('frames-list').dataset.key===key)return;$('frames-list').dataset.key=key;
+  $('frames-list').replaceChildren(...frames.map((frame,index)=>{const figure=node('figure','frame-result'),img=node('img');img.src=safeUrl(frame.previewUrl);img.alt=`Saved frame ${index+1}`;img.loading='lazy';const zoom=button('','frame-preview',()=>{const large=node('img','frame-zoom');large.src=img.src;large.alt=img.alt;modal(`Frame ${index+1}`,large,'',null);});zoom.setAttribute('aria-label',`Enlarge frame ${index+1}`);zoom.append(img);figure.append(zoom);const time=timestamp(frame.time);if(time){const seek=button(`Seek to ${time}`,'text-button',()=>{const media=$('media-stage').querySelector('video');if(media)media.currentTime=frame.time;});seek.disabled=!$('media-stage').querySelector('video');figure.append(seek);}else figure.append(node('figcaption','muted',`Frame ${index+1} · timestamp unavailable`));return figure;}));
 }
 function renderEvidence(item) {
   const capability = state?.capabilities?.study || {available: false};
@@ -205,9 +297,10 @@ function renderEvidence(item) {
     $('artifact-list').append(node('h3', 'artifact-heading', study.artifact.title || study.artifact.name || 'Artifact contents'), node('pre', 'artifact-body', study.artifact.text));
     if (study.artifact.complete === false) $('artifact-list').append(node('p', 'muted', 'Preview is partial. Open the artifact file to read it in full.'));
   }
-  $('study-actions').hidden = !capability.available;
+  $('study-actions').hidden = !capability.available || !item.capabilities?.visual;
   if (capability.available) {
-    const allowed = ['visual', 'speech', 'general'];
+    const allowed = item.capabilities?.visual ? ['visual'] : [];
+    $('study-actions').hidden = !allowed.length;
     const names = {visual: 'Visual evidence', speech: 'Speech and transcript', general: 'General study'};
     const existing = $('study-operation').value;
     $('study-operation').replaceChildren(...allowed.map(recipe => { const option = node('option', '', names[recipe]); option.value = recipe; return option; }));
@@ -215,17 +308,27 @@ function renderEvidence(item) {
     $('prepare-study').disabled = ['loading', 'running', 'queued'].includes(study.status);
   }
 }
+function activityResultTarget(job,item) {
+  // A recipe is trusted only when attached by the same durable job ID.
+  const attached=item.study?.jobId===job.id||item.study?.jobId===job.studyJobId?item.study:null;
+  const recipe=job.recipe||attached?.recipe;
+  if(recipe==='visual'||item.frames?.length&&item.capabilities?.hasAudio===false)return {label:'Open frames',tab:'frames'};
+  if(recipe==='speech'||job.action==='live-transcript'||transcriptTracks(item).length)return {label:'Open transcript',tab:'captions'};
+  if(item.frames?.length)return {label:'Open frames',tab:'frames'};
+  return {label:'Open result',tab:'evidence'};
+}
 function renderActivity() {
   const jobs = state?.jobs || [], active = jobs.filter(job => RUNNING.has(job.status));
   text('activity-count', active.length); $('activity-count').hidden = !active.length;
   $('activity-empty').hidden = !!jobs.length;
-  const key = JSON.stringify(jobs); if (key === activityKey) return; activityKey = key;
+  const key = JSON.stringify([jobs,library()]); if (key === activityKey) return; activityKey = key;
   const focusId = document.activeElement?.closest('[data-job-id]')?.dataset.jobId;
   const focusAction = document.activeElement?.dataset.jobAction;
   const expanded = new Set([...$('activity-list').querySelectorAll('[data-job-id]:has(details[open])')].map(row => row.dataset.jobId));
   $('activity-list').replaceChildren(...jobs.map(job => {
     const row = node('article', 'activity-card'); row.dataset.jobId = job.id;
-    const visual = node('div', 'activity-icon'); visual.append(icon(mediaKind(job))); const copy = node('div', 'activity-copy');
+    const sourceItem = library().find(item => item.id === job.sourceItemId);
+    const visual = previewFor(sourceItem || {...job,kind:job.sourceKind||job.kind,previewUrl:job.sourcePreviewUrl||job.previewUrl}, 'activity-icon'); const copy = node('div', 'activity-copy');
     const result = transferView(job);
     const statuses = {queued: 'Queued', starting: 'Starting', downloading: 'Downloading', running: 'Running', processing: 'Processing', cancelling: 'Cancelling', complete: 'Completed', evidence_ready: 'Prepared · review status unknown', error: 'Needs attention', 'needs-attention': 'Needs attention', interrupted: 'Interrupted', cancelled: 'Cancelled'};
     copy.append(node('h2', '', job.title || job.filename || job.action || 'Media job'));
@@ -244,8 +347,10 @@ function renderActivity() {
       const cancel = button(job.status === 'cancelling' ? 'Cancelling…' : 'Cancel', 'secondary', () => { cancel.disabled = true; send('cancel', {id: job.id}); }); cancel.disabled = job.status === 'cancelling'; cancel.dataset.jobAction = 'cancel'; cancel.setAttribute('aria-label', `Cancel ${job.title || 'job'}`); actions.append(cancel);
     }
     if (job.canResume === true) { const resume = button('Recover', 'secondary', () => { resume.disabled = true; send('resume-job', {id: job.id}); }); resume.dataset.jobAction = 'resume'; actions.append(resume); }
+    if(!sourceItem&&job.sourceItemId){const unavailable=button('Open media','secondary',()=>{});unavailable.disabled=true;unavailable.title=job.sourceUnavailableReason||'The source media is no longer in Library.';actions.append(unavailable);copy.append(node('p','activity-detail',unavailable.title));}
+    if (sourceItem) { const openSource=button('Open media','secondary',()=>selectItem(sourceItem.id));openSource.dataset.jobAction='source';actions.append(openSource); if(job.action==='study'||job.studyJobId||job.sourceItemId) {const target=activityResultTarget(job,sourceItem),openResult=button(target.label,'secondary',()=>selectItem(sourceItem.id,target.tab));openResult.dataset.jobAction='result';actions.append(openResult);} }
     const saved = library().find(item => item.id === job.id || item.jobId === job.id);
-    if (saved) { const open = button('Open result', 'secondary', () => selectItem(saved.id)); open.dataset.jobAction = 'open'; actions.append(open); }
+    if (saved && !sourceItem) { const open = button('Open result', 'secondary', () => selectItem(saved.id)); open.dataset.jobAction = 'open'; actions.append(open); }
     row.append(visual, copy, actions); return row;
   }));
   if (focusId && focusAction) [...$('activity-list').querySelectorAll('[data-job-id]')].find(row => row.dataset.jobId === focusId)?.querySelector(`[data-job-action="${focusAction}"]`)?.focus({preventScroll: true});
@@ -253,14 +358,15 @@ function renderActivity() {
 function renderSettings() {
   const helper = state?.helper || {}, connected = helper.status === 'ready';
   $('connection-dot').className = 'status-dot ' + helper.status;
-  text('connection-label', connected ? 'Local helper connected' : helper.status === 'checking' ? 'Connecting…' : 'Helper needs setup');
+  text('connection-label', connected ? 'Local component connected' : helper.status === 'checking' ? 'Connecting…' : 'Check local connection');
   text('save-directory', helper.directory || 'The save folder will appear when setup is complete.');
   $('save-folder').disabled = $('settings-folder').disabled = !connected;
   $('completion-sound').checked = state?.settings?.notifications !== false;
   $('tool-status').replaceChildren(node('strong', '', connected ? 'Ready for capture' : helper.status === 'checking' ? 'Checking local tools…' : 'Setup needs attention'), node('span', '', connected ? `Framekeep ${helper.version || state.workerVersion || ''}${helper.extractor ? ' · yt-dlp ' + helper.extractor : ''}` : helper.error || 'Run Install Framekeep.cmd, then check the connection.'));
   $('setup-help').hidden = connected;
   const study = state?.capabilities?.study;
-  text('study-availability', study?.available ? 'The optional study adapter is connected. Available operations appear in each item’s Evidence tab.' : study?.reason || 'Optional study tools are not connected. Media capture, playback and source captions are available without them.');
+  text('study-availability', study?.available ? 'Local processing is connected. Available transcript and frame actions appear with each compatible item.' : study?.reason || 'Optional study tools are not connected. Media capture, playback and source captions are available without them.');
+  applyPreferences();
   const app = state?.app || {}, version = app.version || state.workerVersion || helper.version || 'beta';
   text('sidebar-version', `Framekeep ${version}`);
   text('settings-version', `Framekeep ${version}`);
@@ -311,9 +417,11 @@ function renderCapture() {
   }
 }
 function render(next) {
-  if (next.uiError) { pendingDownload = false; error(next.uiError); renderCapture(); if ($('capture-dialog').open) { text('capture-message', next.uiError); $('capture-message').hidden = false; } if (pendingCollection !== null) { text('collection-feedback', 'Collection was not saved. See the error above.'); pendingCollection = null; } return; }
+  if (next.uiError) { pendingSelectionId=null; if(view==='workspace')renderCaptions(currentItem()); pendingDownload = false; error(next.uiError); renderCapture(); if ($('capture-dialog').open) { text('capture-message', next.uiError); $('capture-message').hidden = false; } if (pendingCollection !== null) { text('collection-feedback', 'Collection was not saved. See the error above.'); pendingCollection = null; } return; }
   state = next;
-  renderSettings(); renderCollections(); renderLibrary(); renderActivity(); renderCapture();
+  if(state.selectedItem?.id===pendingSelectionId)pendingSelectionId=null;
+  const availableIds=new Set(library().map(item=>item.id));selection=new Set([...selection].filter(id=>availableIds.has(id)));
+  renderSettings(); renderCollections(); renderLibrary(); renderActivity(); renderCapture(); offerGuide();
   if (selectedId && view === 'workspace') {
     const item = state.selectedItem?.id === selectedId ? state.selectedItem : library().find(entry => entry.id === selectedId);
     if (item) renderWorkspace(item);
@@ -326,7 +434,7 @@ document.querySelector('.brand').onclick = event => { event.preventDefault(); co
 for (const id of ['new-capture', 'empty-capture', 'activity-capture']) $(id).onclick = openCapture;
 for (const id of ['refresh-library', 'refresh-activity', 'retry-helper']) $(id).onclick = () => send('check');
 for (const id of ['save-folder', 'settings-folder']) $(id).onclick = () => send('folder');
-$('empty-help').onclick = () => { setView('settings'); $('capture-help').scrollIntoView({block: 'start'}); };
+$('empty-help').onclick = () => setView('help');
 $('dismiss-error').onclick = () => error('');
 $('library-search').oninput = renderLibrary; $('sort-order').onchange = renderLibrary;
 for (const filter of document.querySelectorAll('[data-kind]')) filter.onclick = () => { type = filter.dataset.kind; for (const peer of document.querySelectorAll('[data-kind]')) { const active = peer === filter; peer.classList.toggle('selected', active); peer.setAttribute('aria-pressed', String(active)); } renderLibrary(); };
@@ -334,19 +442,20 @@ $('reset-filters').onclick = () => { type = 'all'; collection = ''; $('library-s
 $('back-library').onclick = () => setView('library');
 $('open-item').onclick = () => send('open-item', {id: selectedId});
 $('open-source').onclick = () => send('open-source', {id: selectedId});
-$('collection-form').onsubmit = event => { event.preventDefault(); pendingCollection = $('item-collection').value.trim(); text('collection-feedback', 'Saving…'); send('organize-item', {id: selectedId, collection: pendingCollection}); };
+$('collection-form').onsubmit = event => { event.preventDefault(); organizeItems([selectedId]); };
 $('load-captions').onclick = () => send('transcript', {id: selectedId});
-$('caption-language').onchange = () => send('transcript', {id: selectedId, language: $('caption-language').value});
+$('caption-language').onchange = () => {selectedTrackId=$('caption-language').value;send('transcript-select',{id:selectedId,trackId:selectedTrackId});captionsKey=null;renderCaptions(currentItem());};
 $('caption-search').oninput = () => renderCaptions(state?.selectedItem?.id === selectedId ? state.selectedItem : library().find(item => item.id === selectedId));
-$('export-captions').onclick = () => send('export-transcript', {id: selectedId, timestamps: true});
+$('export-captions').onclick = () => send('export-transcript', {id: selectedId, trackId:selectedTranscript(currentItem()).id, format:$('export-format').value, timestamps:true});
+$('copy-captions').onclick=()=>send('copy-transcript',{id:selectedId,trackId:selectedTranscript(currentItem()).id,format:'txt',timestamps:true});
 $('completion-sound').onchange = () => send('settings', {notifications: $('completion-sound').checked});
 function reviewTab(name, focus = false) {
-  for (const tab of ['captions', 'evidence']) { const active = tab === name; $('review-' + tab).classList.toggle('selected', active); $('review-' + tab).setAttribute('aria-selected', String(active)); $('review-' + tab).tabIndex = active ? 0 : -1; $(tab + '-panel').hidden = !active; }
+  for (const tab of ['captions', 'frames', 'evidence']) { const active = tab === name; $('review-' + tab).classList.toggle('selected', active); $('review-' + tab).setAttribute('aria-selected', String(active)); $('review-' + tab).tabIndex = active ? 0 : -1; $(tab + '-panel').hidden = !active; }
   if (focus) $('review-' + name).focus();
 }
-for (const name of ['captions', 'evidence']) {
+for (const name of ['captions', 'frames', 'evidence']) {
   $('review-' + name).onclick = () => reviewTab(name);
-  $('review-' + name).onkeydown = event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); reviewTab(event.key === 'Home' ? 'captions' : event.key === 'End' ? 'evidence' : name === 'captions' ? 'evidence' : 'captions', true); } };
+  $('review-' + name).onkeydown = event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault();const tabs=['captions','frames','evidence'].filter(tab=>!$('review-'+tab).hidden),index=tabs.indexOf(name);reviewTab(event.key==='Home'?tabs[0]:event.key==='End'?tabs.at(-1):tabs[(index+(event.key==='ArrowLeft'?-1:1)+tabs.length)%tabs.length],true); } };
 }
 $('prepare-study').onclick = () => { $('prepare-study').disabled = true; send('study-submit', {id: selectedId, recipe: $('study-operation').value}); announce('Evidence preparation requested. Check Activity for the job state.'); };
 $('close-capture').onclick = () => $('capture-dialog').close();
@@ -354,7 +463,35 @@ $('capture-form').onsubmit = event => { event.preventDefault(); error(''); pendi
 $('capture-kind').onchange = () => { $('capture-quality').value = ''; captureChoices(); };
 $('capture-thumbnail').onerror = () => { $('capture-thumbnail').hidden = true; };
 $('start-download').onclick = () => { pendingDownload = true; pendingJobIds = new Set((state?.jobs || []).map(job => job.id)); $('start-download').disabled = true; text('start-download', 'Starting…'); send('download', {kind: $('capture-kind').value, quality: $('capture-quality').value}); };
-document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !$('capture-dialog').open) { event.preventDefault(); setView('library', false); $('library-search').focus(); } if (event.key === 'Escape' && view === 'workspace' && !$('capture-dialog').open && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) setView('library'); });
+document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k' && !$('capture-dialog').open) { event.preventDefault(); setView('library', false); $('library-search').focus(); } if (event.key === 'Escape' && view === 'workspace' && !document.querySelector('dialog[open]') && !document.fullscreenElement && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) setView('library'); });
+function applyPreferences() {
+  const prefs=state?.settings||{},appearance=prefs.appearance||'system';
+  document.documentElement.dataset.theme=appearance==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):appearance;
+  document.documentElement.style.setProperty('--transcript-size',`${prefs.transcriptTextSize||16}px`);
+  $('appearance').value=appearance;$('text-size').value=$('reading-size').value=String(prefs.transcriptTextSize||16);$('autoplay-next').checked=prefs.autoplayNext===true;$('repeat-mode').value=prefs.repeat||'none';
+}
+const guide=[
+  ['A home for media worth keeping','Save a video or audio link here, or capture page media with the Framekeep toolbar in Chrome. Already have a file? Open your save folder, add it, then Refresh Library.','No capture, recording or permission is required to finish this guide.'],
+  ['Make room for your collections','Create even an empty collection with ＋. Select several library items and use Organize selected. Ellipsis menus hold rename, source and removal actions.','Deleting a collection keeps your original media. Double-click a title or use F2 to rename its display name.'],
+  ['Read while you listen','Open an item to find Transcript beside the player. Pick a source, imported or generated track; search, seek and export from the same place.','Generating text is optional and uses the installed local speech engine. Original tracks are kept.'],
+  ['Connected to your browser','The installed Framekeep component connects Chrome to local saving and processing. Pin the extension to restore its bubble, manage visibility or start supported transcription.','Setup or model downloads are optional. Settings explains connection health; Help keeps these instructions available.']
+];
+function showTour(){const [title,copy,note]=guide[tourStep];text('tour-step',`QUICK TOUR · ${tourStep+1} OF ${guide.length}`);text('tour-title',title);text('tour-copy',copy);text('tour-note',note);$('back-tour').disabled=tourStep===0;text('next-tour',tourStep===guide.length-1?'Finish':'Next');if(!$('tour-dialog').open)$('tour-dialog').showModal();}
+function finishTour(skipped){send('settings',{tourState:skipped?'skipped':'complete',controlsIntroSeen:true});$('tour-dialog').close();}
+function offerGuide(){if(guideOffered||!state)return;guideOffered=true;if(!state.settings?.tourState||state.settings.tourState==='new'){tourStep=0;showTour();}else if(!state.settings.controlsIntroSeen){const body=node('p','','Transcript now sits beside playback. Use ＋ to create collections and each item’s ellipsis for actions. Settings and Help live at the bottom of the sidebar.');modal('New controls, same library',body,'Got it',()=>send('settings',{controlsIntroSeen:true}));$('action-dialog').addEventListener('close',()=>send('settings',{controlsIntroSeen:true}),{once:true});}}
+$('replay-tour').onclick=()=>{tourStep=0;showTour();};$('next-tour').onclick=()=>{if(tourStep===guide.length-1)finishTour(false);else{tourStep++;showTour();}};$('back-tour').onclick=()=>{tourStep--;showTour();};$('skip-tour').onclick=$('close-tour').onclick=()=>finishTour(true);$('tour-dialog').oncancel=event=>{event.preventDefault();finishTour(true);};
+$('appearance').onchange=()=>send('settings',{appearance:$('appearance').value});for(const id of ['text-size','reading-size'])$(id).onchange=()=>send('settings',{transcriptTextSize:Number($(id).value)});$('autoplay-next').onchange=()=>send('settings',{autoplayNext:$('autoplay-next').checked});$('repeat-mode').onchange=()=>send('settings',{repeat:$('repeat-mode').value});matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyPreferences);
+$('create-collection').onclick=()=>editCollection();$('select-all').onclick=()=>{visibleItems.forEach(item=>selection.add(item.id));renderSelection();};$('clear-selection').onclick=()=>{selection.clear();renderSelection();};$('organize-selection').onclick=()=>organizeItems([...selection]);
+$('close-action').onclick=$('cancel-action').onclick=()=>{$('action-dialog').close();actionHandler=null;};$('action-form').onsubmit=event=>{event.preventDefault();const handler=actionHandler;$('action-dialog').close();actionHandler=null;handler?.();};
+$('workspace-menu').onclick=()=>itemMenu(currentItem());$('item-title').ondblclick=()=>renameItem(currentItem());$('item-title').tabIndex=0;$('item-title').onkeydown=event=>{if(event.key==='F2'){event.preventDefault();renameItem(currentItem());}};
+$('theater-mode').onclick=()=>{document.body.classList.toggle('theater');const active=document.body.classList.contains('theater');text('theater-mode',active?'Exit theater':'Theater');$('theater-mode').setAttribute('aria-pressed',String(active));};
+$('image-zoom').onclick=()=>{$('media-stage').querySelector('img')?.click();};
+$('transcription-setup').onclick=()=>setView('settings');
+$('fullscreen-media').onclick=()=>{const media=$('media-stage').querySelector('video');if(document.fullscreenElement)document.exitFullscreen();else if(media?.requestFullscreen)media.requestFullscreen().catch(()=>announce('Fullscreen is not available in this viewer. Use Theater or Open file.'));};
+$('play-collection').onclick=()=>{const group=currentCollection();if(!group)return;queueIds=playableItems(orderedItems(library(),group,'collection')).map(item=>item.id);queueCollectionId=group.id;const missing=group.itemIds.filter(id=>!library().some(item=>item.id===id&&!['missing','trashed'].includes(item.fileState))).length;queueOmissions=missing?`${missing} missing file${missing===1?' was':'s were'} skipped. Restore the files to include them.`:'';if(queueIds.length){playOnLoad=true;selectItem(queueIds[0]);}};
+$('generate-frames').onclick=()=>{send('study-submit',{id:selectedId,recipe:'visual'});$('generate-frames').disabled=true;text('frame-generation-status','Requesting frame extraction…');};
+$('generate-transcript').onclick=()=>{selectedTrackId='';captionsKey=null;send('study-submit',{id:selectedId,recipe:'speech'});$('generate-transcript').disabled=true;text('generation-status','Requesting local transcription…');};$('cancel-transcript').onclick=()=>send('cancel',{id:(state.study||{}).jobId});$('retry-transcript').onclick=()=>send('resume-job',{id:selectedId});
+$('follow-cue').onclick=()=>{followCue=true;$('follow-cue').hidden=true;lastCue=-1;updateCurrentCue();};for(const event of ['wheel','touchmove','pointerdown'])$('caption-cues').addEventListener(event,pauseFollowing,{passive:true});$('caption-cues').tabIndex=0;$('caption-cues').addEventListener('keydown',event=>{if(['PageUp','PageDown','Home','End','ArrowUp','ArrowDown'].includes(event.key))pauseFollowing();});
 port.onMessage.addListener(render);
 port.onDisconnect.addListener(() => { error('The local app connection closed. Reopen Framekeep to reconnect. Saved files remain in your save folder.'); text('connection-label', 'Connection closed'); $('connection-dot').className = 'status-dot missing'; });
 setView('library', false); send('init');

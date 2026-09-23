@@ -122,6 +122,8 @@ class Library:
                     'kind':message.get('kind','batch' if message['action']=='capture' else 'video'),'quality':message.get('quality'),
                     'sourceUrl':source_url(message),'origin':message.get('origin','extension'),'created':int(time.time()*1000),
                     'ownerPid':os.getpid(),'fingerprint':fingerprint,'canCancel':True,'canResume':False}
+            if message.get('sourceItemId'): record['sourceItemId']=identifier(message['sourceItemId'])
+            elif message['action']=='live-transcript': record['sourceItemId']=job_id
             self._write(self.meta/'jobs'/(job_id+'.json'),record)
         return None
 
@@ -171,6 +173,67 @@ class Library:
             if changes: data.update(changes); self._write(path,data)
         return data
 
+    def collections(self, items=None):
+        """Migrate legacy labels once; stable identities and empty collections survive."""
+        if items is None:
+            saved=self._read(self.meta/'collections.json')
+            if saved.get('schema')==1: return saved['collections']
+            items=self.scan()[0]
+        path=self.meta/'collections.json'
+        with operation_lock(self.root):
+            data=self._read(path)
+            if data.get('schema') != 1:
+                rows=[]; labels={}
+                for item in items:
+                    name=str(item.get('collection') or '').strip()
+                    if not name: continue
+                    if name not in labels:
+                        labels[name]={'id':str(uuid.uuid4()),'name':name,'itemIds':[]}
+                        rows.append(labels[name])
+                    labels[name]['itemIds'].append(item['id'])
+                data={'schema':1,'collections':rows}
+                self._write(path,data)
+            return data['collections']
+
+    def collection_action(self, action, message):
+        items=self.scan()[0]; available={i['id'] for i in items}
+        self.collections(items)
+        with operation_lock(self.root):
+            path=self.meta/'collections.json'; data=self._read(path); rows=data['collections']
+            if action in ('collection-create','collection-rename'):
+                name=message.get('name')
+                if not isinstance(name,str) or not name.strip() or len(name.strip())>80 or any(ord(c)<32 for c in name):
+                    raise ValueError('Use a collection name of 1–80 characters.')
+                name=name.strip()
+            if action=='collection-create':
+                row={'id':str(uuid.uuid4()),'name':name,'itemIds':[]}; rows.append(row)
+            else:
+                target=identifier(message.get('collectionId') or message.get('id'))
+                row=next((c for c in rows if c['id']==target),None)
+                if row is None: raise ValueError('This collection no longer exists.')
+                if action=='collection-rename': row['name']=name
+                elif action=='collection-delete': rows.remove(row)
+                elif action in ('collection-membership','collection-reorder'):
+                    ids=message.get('itemIds')
+                    if not isinstance(ids,list) or len(ids)>10000 or any(not isinstance(i,str) for i in ids) or len(set(ids))!=len(ids):
+                        raise ValueError('Choose a unique list of saved items.')
+                    if action=='collection-reorder':
+                        if set(ids)!=set(row['itemIds']): raise ValueError('Reordering must include every collection item exactly once.')
+                        row['itemIds']=ids
+                    elif message.get('remove') is True: row['itemIds']=[i for i in row['itemIds'] if i not in ids]
+                    else:
+                        if not set(ids)<=available: raise ValueError('An item is no longer in the library.')
+                        row['itemIds'] += [i for i in ids if i not in row['itemIds']]
+                else: raise ValueError('Unsupported collection action.')
+            self._write(path,data)
+            return row
+
+    def rename(self,item_id,title):
+        self.item(item_id)
+        if not isinstance(title,str) or not title.strip() or len(title.strip())>300 or any(ord(c)<32 for c in title):
+            raise ValueError('Use a display name of 1–300 characters.')
+        return self.item_meta(item_id,displayName=title.strip())
+
     def scan(self):
         jobs=[]; output_map={}
         job_dir=self._safe(self.meta/'jobs')
@@ -194,26 +257,65 @@ class Library:
                 job,output=output_map.get(relative,({},{}))
                 item_id=output.get('id') or str(uuid.uuid5(uuid.NAMESPACE_URL,relative))
                 meta=self.item_meta(item_id)
+                if meta.get('hidden'): continue
                 study=meta.get('study')
-                if study:
+                references=meta.get('studyHistory',[])+([study] if study else [])
+                for reference in references:
                     expected=self.meta/'study'/item_id
-                    if Path(study.get('folder','')).resolve()==expected.resolve():
-                        saved_study=self._read(expected/'job.json')
+                    folder=Path(reference.get('folder','')).resolve()
+                    if folder==expected.resolve() or (folder.parent==expected.resolve() and folder.name in ('speech','visual','general')):
+                        saved_study=self._read(folder/'job.json')
                         if saved_study:
-                            study={**study,'jobId':saved_study.get('id'),'state':saved_study.get('state')}
+                            if reference==study: study={**study,'jobId':saved_study.get('id'),'state':saved_study.get('state')}
                             suite_state=saved_study.get('state')
                             jobs.append({'id':saved_study['id'],'sourceItemId':item_id,'action':'study','kind':MEDIA[file.suffix.lower()],
-                                         'title':file.stem+' — '+study.get('recipe','study')+' preparation','status':suite_state,
+                                         'title':meta.get('displayName',file.stem)+' — '+reference.get('recipe','study')+' preparation','status':suite_state,
                                          'created':int(saved_study.get('created_at',0)*1000),'canCancel':False,
                                          'canResume':suite_state in ('partial','failed','worker_failed','interrupted'),
                                          'error':saved_study.get('worker_error'),'stages':[{k:s.get(k) for k in ('id','state','error')} for s in saved_study.get('stages',[])],
                                          'sourceUrl':job.get('sourceUrl','')})
                 title=job.get('title') if job.get('action')=='download' and job.get('title')!='Media download' else re.sub(r'\s*\[[^\]]*\]','',file.stem)
-                items.append({'id':item_id,'jobId':job.get('id'), 'title':title,'filename':relative,'kind':MEDIA[file.suffix.lower()],
+                items.append({'id':item_id,'jobId':job.get('id'), 'title':meta.get('displayName') or title,'filename':relative,'kind':MEDIA[file.suffix.lower()],
                               'bytes':details.st_size,'finished':int(details.st_mtime*1000),'status':'complete','sourceUrl':job.get('sourceUrl',''),
                               'collection':meta.get('collection',''),'study':study,'captionSource':meta.get('captionSource')})
             except (OSError,ValueError): continue
+        # A removed source must not erase its attached processing history. These
+        # references come only from our own item IDs, never a title or suite scan.
+        visible={item['id'] for item in items}; recorded={job['id'] for job in jobs}
+        item_dir=self._safe(self.meta/'items')
+        if item_dir.is_dir():
+            for file in item_dir.glob('*.json'):
+                try:
+                    item_id=identifier(file.stem)
+                    if item_id in visible: continue
+                    meta=self._read(file)
+                    references=meta.get('studyHistory',[])+([meta['study']] if meta.get('study') else [])
+                    for reference in references:
+                        expected=(self.meta/'study'/item_id).resolve(); folder=Path(reference.get('folder','')).resolve()
+                        if folder!=expected and not (folder.parent==expected and folder.name in ('speech','visual','general')): continue
+                        saved=self._read(folder/'job.json')
+                        if not saved or saved.get('id') in recorded: continue
+                        job_id=identifier(saved.get('id')); recorded.add(job_id)
+                        jobs.append({'id':job_id,'sourceItemId':item_id,'action':'study','kind':'unknown',
+                                     'title':(meta.get('displayName') or 'Unavailable source media')+' — '+reference.get('recipe','study')+' preparation',
+                                     'status':saved.get('state'),'created':int(saved.get('created_at',0)*1000),'canCancel':False,'canResume':False,
+                                     'sourceUnavailable':True,'sourceUnavailableReason':'Source media is hidden from the library.' if meta.get('hidden') else 'Source media is missing from the library.',
+                                     'error':saved.get('worker_error'),'stages':[{k:s.get(k) for k in ('id','state','error')} for s in saved.get('stages',[])]})
+                except (OSError,ValueError): continue
+        for job in jobs:
+            source_id=job.get('sourceItemId')
+            if source_id and source_id not in visible:
+                job['sourceUnavailable']=True
+                job.setdefault('sourceUnavailableReason','Source media is missing or hidden from the library.')
         items.sort(key=lambda v:v['finished'],reverse=True); jobs.sort(key=lambda v:v.get('created',0),reverse=True)
+        # Existing callers may still set a legacy label before their first explicit
+        # collection operation. Only the new collection file makes IDs authoritative.
+        collection_data=self._read(self.meta/'collections.json')
+        if collection_data.get('schema')==1:
+            rows=collection_data['collections']
+            for item in items:
+                item['collectionIds']=[c['id'] for c in rows if item['id'] in c['itemIds']]
+                item['collection']=next((c['name'] for c in rows if item['id'] in c['itemIds']),'')
         return items,jobs
 
     def item(self, item_id):
@@ -231,3 +333,29 @@ class Library:
                 import host
                 return {'status':'ready',**host.parse_captions(sidecar.read_text('utf-8-sig'),suffix),'source':'sidecar-captions','language':'und','automatic':None}
         return {'status':'unavailable','source':'source-captions','cues':[]}
+
+    def save_captions(self,item_id,transcript):
+        """Keep previously obtained caption originals when a language/track changes."""
+        with operation_lock(self.root):
+            meta=self.item_meta(item_id); previous=meta.get('transcript'); history=meta.get('transcriptHistory',[])
+            if previous and previous!=transcript and previous not in history: history.append(previous)
+            self.item_meta(item_id,transcript=transcript,transcriptHistory=history,captionSource='source-captions')
+
+    def caption_tracks(self,item):
+        meta=self.item_meta(item['id']); tracks=[]; seen=set()
+        saved=([meta['transcript']] if meta.get('transcript') else [])+meta.get('transcriptHistory',[])
+        media=self.path(item['filename'])
+        for suffix in ('.vtt','.srt','.json3'):
+            sidecar=self._safe(media.with_suffix(suffix))
+            if sidecar.is_file() and sidecar.stat().st_size<=8*1024*1024:
+                import host
+                saved.append({'status':'ready',**host.parse_captions(sidecar.read_text('utf-8-sig'),suffix),
+                              'source':'sidecar-captions','language':'und','automatic':None,'originalFilename':sidecar.name})
+        for caption in saved:
+            if caption.get('status')!='ready': continue
+            digest=hashlib.sha256(json.dumps(caption,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:16]
+            if digest in seen: continue
+            seen.add(digest)
+            tracks.append({**caption,'id':'captions-'+digest,'name':'Imported captions' if caption.get('source')=='sidecar-captions' else 'Source captions',
+                           'timed':bool(caption.get('cues')),'sourceTiming':True})
+        return tracks

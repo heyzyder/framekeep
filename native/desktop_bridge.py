@@ -51,21 +51,26 @@ class DesktopBridge:
         from study_adapter import StudyAdapter
         self._study = StudyAdapter(config,self._store)
         self._study_inflight = set()
+        self._transcript_pending = set()
         self._last_study_poll = 0
         self._preview = None
         self._state = {
             'protocol': 2, 'workerVersion': host.VERSION, 'app': app_identity(Path(__file__).parent),
             'helper': {'status': 'checking'}, 'probe': {'status': 'idle'}, 'jobs': [],
-            'settings': {'kind': 'video', 'quality': '1080', 'audioQuality': '192', 'notifications': True},
+            'settings': {'kind': 'video', 'quality': '1080', 'audioQuality': '192', 'notifications': True,
+                         'appearance':'system','transcriptTextSize':16,'autoplayNext':False,'repeat':'none',
+                         'tourState':'new','controlsIntroSeen':False},
             'alerts': {'status': 'granted'}, 'transcript': {'status': 'idle'},
             'page': {'status': 'desktop', 'candidates': [], 'origins': []},
-            'library': [], 'selectedItem': None, 'study': {'status':'idle'},
+            'library': [], 'collections':[], 'selectedItem': None, 'study': {'status':'idle'},
             'capabilities': {'library':True,'preview':True,'sharedJobs':True,'pause':False,'study':self._study.capabilities()},
             'saveDirectory': str(self._store.root)}
         preferences = self._directory / 'desktop-settings.json'
         try:
             saved = json.loads(preferences.read_text('utf-8'))
             self._state['settings'].update({key: saved[key] for key in self._state['settings'] if key in saved})
+            if isinstance(saved,dict) and 'tourState' not in saved:
+                self._state['settings'].update(tourState='skipped',controlsIntroSeen=False)
         except (OSError, ValueError): pass
 
     def snapshot(self, revision=-1):
@@ -89,10 +94,37 @@ class DesktopBridge:
                     if job: job['status'] = 'cancelling'; self._request('cancel', target=job['id'])
                     else: raise ValueError('This job is no longer running or does not support cancellation.')
                 elif action == 'select-item': self._select(message.get('id'))
+                elif action in ('collection-create','collection-rename','collection-delete','collection-membership','collection-reorder'):
+                    self._store.collection_action(action,message); self._library()
+                elif action=='rename-item':
+                    self._store.rename(message.get('id'),message.get('title')); self._library()
+                elif action=='remove-item':
+                    item=self._store.item(message.get('id')); self._store.item_meta(item['id'],hidden=True); self._library()
+                    if (self._state['selectedItem'] or {}).get('id')==item['id']: self._state['selectedItem']=None
+                elif action=='restore-item':
+                    self._store.item_meta(message.get('id'),hidden=False); self._library()
+                elif action=='open-folder':
+                    item=self._store.item(message.get('id')); os.startfile(str(self._store.path(item['filename']).parent))
+                elif action=='trash-item':
+                    if message.get('confirmed') is not True: raise ValueError('Confirm moving the media file to the Recycle Bin first.')
+                    if self._busy(): raise ValueError('Wait for current file operations to finish before moving media to the Recycle Bin.')
+                    item=self._store.item(message.get('id'))
+                    if item['id'] in self._study_inflight or (item.get('study') or {}).get('state') in ('planned','submitted','queued','running'):
+                        raise ValueError('Wait for media processing to finish before moving its source to the Recycle Bin.')
+                    from recycle import operation_lock, recycle_file
+                    with operation_lock(self._store.root): recycle_file(self._store.path(item['filename']))
+                    self._library()
+                    if (self._state['selectedItem'] or {}).get('id')==item['id']: self._state['selectedItem']=None
                 elif action == 'organize-item':
                     item=self._store.item(message.get('id')); collection=message.get('collection','')
                     if not isinstance(collection,str) or len(collection)>80: raise ValueError('Use a collection name of up to 80 characters.')
-                    self._store.item_meta(item['id'],collection=collection.strip()); self._library(); self._select(item['id'])
+                    rows=self._store.collections(); name=collection.strip()
+                    for row in rows:
+                        if item['id'] in row['itemIds']: self._store.collection_action('collection-membership',{'collectionId':row['id'],'itemIds':[item['id']],'remove':True})
+                    if name:
+                        row=next((c for c in rows if c['name']==name),None) or self._store.collection_action('collection-create',{'name':name})
+                        self._store.collection_action('collection-membership',{'collectionId':row['id'],'itemIds':[item['id']]})
+                    self._library(); self._select(item['id'])
                 elif action == 'open-item':
                     item=self._store.item(message.get('id')); os.startfile(str(self._store.path(item['filename'])))
                 elif action == 'open-source':
@@ -110,20 +142,34 @@ class DesktopBridge:
                 elif action == 'transcript':
                     if message.get('id'): self._item_captions(message['id'],message.get('language'))
                     else: self._captions(message.get('language'))
+                elif action=='transcript-select':
+                    if (self._state['selectedItem'] or {}).get('id')!=message.get('id'): self._select(message.get('id'))
+                    selected=self._state['selectedItem']
+                    track=next((t for t in selected.get('transcriptTracks',[]) if t['id']==message.get('trackId')),None)
+                    if not track: raise ValueError('That transcript track is unavailable.')
+                    selected['transcript']=track
                 elif action == 'acknowledge':
                     for job in self._state['jobs']: job['unread'] = False
                 elif action == 'settings':
                     for key, allowed in [('kind', ['video', 'audio']), ('quality', ['best'] + [str(x) for x in range(144, 8641)]), ('audioQuality', ['128', '192', '320'])]:
                         if message.get(key) in allowed: self._state['settings'][key] = message[key]
                     if isinstance(message.get('notifications'), bool): self._state['settings']['notifications'] = message['notifications']
-                    (self._directory / 'desktop-settings.json').write_text(json.dumps(self._state['settings']), encoding='utf-8')
+                    for key,allowed in [('appearance',('system','light','dark')),('transcriptTextSize',(14,16,18,20,24)),
+                                        ('repeat',('none','one','all')),('tourState',('new','skipped','complete'))]:
+                        if message.get(key) in allowed: self._state['settings'][key]=message[key]
+                    for key in ('autoplayNext','controlsIntroSeen'):
+                        if isinstance(message.get(key),bool): self._state['settings'][key]=message[key]
+                    target=self._directory/'desktop-settings.json'; temporary=target.with_name(target.name+'.'+uuid.uuid4().hex+'.tmp')
+                    try:
+                        temporary.write_text(json.dumps(self._state['settings']),encoding='utf-8'); os.replace(temporary,target)
+                    finally: temporary.unlink(missing_ok=True)
                 elif action == 'seek':
                     url = host.normalize_url(self._state['probe'].get('url'))
                     seconds = message.get('seconds')
                     if isinstance(seconds, (int, float)) and 0 <= seconds < 1000000:
                         if 'youtube.com/watch?' in url: webbrowser.open(url + '&t=' + str(int(seconds)) + 's')
                         elif 'vimeo.com/' in url: webbrowser.open(url + '#t=' + str(int(seconds)) + 's')
-                elif action in ('export-transcript', 'copy-transcript'): self._export(action, message.get('timestamps', True),message.get('id'))
+                elif action in ('export-transcript', 'copy-transcript'): self._export(action, message.get('timestamps', True),message.get('id'),message.get('trackId'),message.get('format','txt'))
                 else: raise ValueError('That action is not available in the desktop app.')
                 self._revision += 1
             except (ValueError, OSError, KeyError) as error: return {'error': str(error)[:300]}
@@ -190,23 +236,41 @@ class DesktopBridge:
     def _library(self):
         self._last_scan = time.monotonic()
         items,entries=self._store.scan()
+        collections=self._store.collections(items)
         if items and self._preview is None:
             from media_preview import PreviewServer
             self._preview=PreviewServer(self._store)
-        for item in items: item['previewUrl']=self._preview.url(item['filename'])
+        for item in items:
+            item['capabilities']=self._study.media_capabilities(item)
+            item['previewUrl']=self._preview.url(item['filename'],item['capabilities']['mimeType'])
+            item['kind']=item['capabilities']['kind']
+            item['collectionIds']=[c['id'] for c in collections if item['id'] in c['itemIds']]
+            item['collection']=next((c['name'] for c in collections if item['id'] in c['itemIds']),'')
         known={j['id']:j for j in self._state['jobs']}
         by_id={i['id']:i for i in items}
         for job in entries:
-            if job['id'] in by_id: job.update(by_id[job['id']])
+            if job['id'] in by_id:
+                # A live session publishes its growing WAV before processing ends.
+                # File availability must not replace the durable job's execution state.
+                job.update({key:value for key,value in by_id[job['id']].items() if key not in ('id','status','finished')})
+            if job.get('action')=='live-transcript' and job.get('status') in ACTIVE:
+                job.update(canCancel=False,detail='Live tab transcription is running. Stop it from the Framekeep browser toolbar.')
+            source=by_id.get(job.get('sourceItemId'))
+            if not source:
+                outputs=[by_id[o['id']] for o in job.get('outputs',[]) if o.get('id') in by_id]
+                if len(outputs)==1: source=outputs[0]
+            if source:
+                job.update(sourceItemId=source['id'],sourceTitle=source['title'],sourceKind=source['kind'],sourcePreviewUrl=source['previewUrl'])
             for key in ('fileState','fileError','unread'):
                 if key in known.get(job['id'],{}): job[key]=known[job['id']][key]
         recorded={j['id'] for j in entries}
         # Preserve requests between dispatch and the host's durable start receipt.
         entries += [j for j in known.values() if j['id'] not in recorded and j['status'] in ACTIVE]
         entries += [i for i in items if not i.get('jobId')]
-        if items != self._state['library'] or entries != self._state['jobs']:
-            self._state['library']=items; self._state['jobs']=entries; self._revision+=1
+        if items != self._state['library'] or entries != self._state['jobs'] or collections != self._state['collections']:
+            self._state['library']=items; self._state['jobs']=entries; self._state['collections']=collections; self._revision+=1
         selected=self._state['selectedItem'] or {}
+        if selected.get('id') in by_id: selected.update(by_id[selected['id']])
         attached=(by_id.get(selected.get('id')) or {}).get('study')
         visible=self._state['study']
         if (attached and selected['id'] not in self._study_inflight and visible.get('status')!='error'
@@ -222,16 +286,38 @@ class DesktopBridge:
         item=next((i for i in self._state['library'] if i['id']==identifier),None)
         if not item: raise ValueError('This item is no longer in the save folder.')
         self._state['selectedItem']={**item,'transcript':self._store.captions(item),'artifacts':[]}
+        self._refresh_tracks(item)
         self._state['study']={'status':'idle'}
         if item.get('study'):
             if identifier not in self._study_inflight: self._study_action('study-status',{'id':identifier})
             else: self._state['study']={'status':'loading','sourceItemId':identifier}
 
+    def _tracks(self,item):
+        tracks=self._store.caption_tracks(item)
+        for index,track in enumerate(self._store.item_meta(item['id']).get('transcriptTracks',[])):
+            tracks.append({**track,'id':track.get('id','saved-'+str(index)),'status':'ready','source':track.get('source') or track.get('provenance','imported')})
+        try: tracks.extend(self._study.transcript_tracks(item))
+        except (OSError,ValueError,KeyError) as error:
+            selected=self._state['selectedItem'] or {}
+            if selected.get('id')==item['id']: selected['transcriptError']=str(error)[:300]
+        return tracks
+
+    def _refresh_tracks(self,item):
+        selected=self._state['selectedItem'] or {}
+        if selected.get('id')!=item['id']: return
+        old=(selected.get('transcript') or {}).get('id'); tracks=self._tracks(item)
+        selected['transcriptTracks']=tracks
+        if tracks:
+            generated=[t for t in tracks if t.get('source')=='generated']
+            if item['id'] in self._transcript_pending and generated:
+                selected['transcript']=generated[-1]; self._transcript_pending.discard(item['id'])
+            else: selected['transcript']=next((t for t in tracks if t['id']==old),tracks[0])
+
     def _item_captions(self,identifier,language=None):
         if (self._state['selectedItem'] or {}).get('id')!=identifier: self._select(identifier)
         item=self._store.item(identifier); transcript=self._store.captions(item)
         if transcript['status']=='ready':
-            self._state['selectedItem']['transcript']=transcript; return
+            self._refresh_tracks(item); return
         if not item.get('sourceUrl'): raise ValueError('This item has no source captions. Place a matching .vtt or .srt beside the saved media.')
         self._state['selectedItem']['transcript']={'status':'loading','cues':[],'source':'source-captions'}
         self._request('probe',url=item['sourceUrl'],itemId=identifier,language=language)
@@ -240,23 +326,29 @@ class DesktopBridge:
         item_id=message.get('id')
         # Recovery may be addressed by the suite job ID from Activity.
         if action=='resume-job':
-            item=next((i for i in self._store.scan()[0] if i['id']==item_id or (i.get('study') or {}).get('jobId')==item_id),None)
+            items,jobs=self._store.scan()
+            source_id=next((j.get('sourceItemId') for j in jobs if j['id']==item_id),item_id)
+            item=next((i for i in items if i['id']==source_id),None)
             if not item: raise ValueError('No attached study matches this job.')
         else: item=self._store.item(item_id)
         if item['id'] in self._study_inflight: raise ValueError('Wait for the current study request to finish.')
+        if action=='study-submit' and message.get('recipe')=='speech': self._transcript_pending.add(item['id'])
         self._study_inflight.add(item['id']); self._last_study_poll=time.monotonic()
         if not background: self._state['study']={'status':'loading','sourceItemId':item['id']}
         def run():
             try:
                 if action=='study-submit': result=self._study.submit(item,message.get('recipe','visual'))
-                elif action=='resume-job': result=self._study.resume(item)
+                elif action=='resume-job': result=self._study.resume(item,item_id)
                 elif action=='study-read': result={**self._study.status(item),'read':self._study.read(item,message.get('chunk',1))}
                 elif action=='study-artifact': result={**self._study.status(item),'artifact':self._study.read_artifact(item,message.get('artifactId'))}
                 else: result=self._study.status(item)
                 with self._lock:
+                    if self._preview:
+                        for frame in result.get('frames',[]): frame['previewUrl']=self._preview.url(frame['filename'])
                     if (self._state['selectedItem'] or {}).get('id')==item['id']:
                         self._state['study']=result
-                        self._state['selectedItem'].update(study=result,artifacts=result.get('artifacts',[]))
+                        self._state['selectedItem'].update(study=result,artifacts=result.get('artifacts',[]),frames=result.get('frames',[]))
+                        self._refresh_tracks(item)
                     self._last_scan=0; self._revision+=1
             except Exception as error:
                 with self._lock:
@@ -307,8 +399,9 @@ class DesktopBridge:
                 if task.get('itemId'):
                     transcript={'status':'ready' if event=='result' else 'error','source':'source-captions','automatic':task.get('automatic'),**data}
                     if event=='error': transcript['error']=error
-                    else: self._store.item_meta(task['itemId'],transcript=transcript,captionSource='source-captions')
+                    else: self._store.save_captions(task['itemId'],transcript)
                     if (self._state['selectedItem'] or {}).get('id')==task['itemId']: self._state['selectedItem']['transcript']=transcript
+                    if event=='result': self._refresh_tracks(self._store.item(task['itemId']))
                 elif task.get('url') == self._state['probe'].get('url'):
                     self._state['transcript'].update(status='ready' if event == 'result' else 'error', **data)
                     if event == 'error': self._state['transcript']['error'] = error
@@ -324,7 +417,7 @@ class DesktopBridge:
                             job.update(filename=message['filename'], bytes=message['bytes'], percent=100)
                             transcript=self._state['transcript']
                             if transcript.get('status')=='ready' and transcript.get('url')==task.get('url'):
-                                self._store.item_meta(job['id'],transcript={**transcript,'source':'source-captions'},captionSource='source-captions')
+                                self._store.save_captions(job['id'],{**transcript,'source':'source-captions'})
                             self._last_scan=0
                             if self._state['settings'].get('notifications'):
                                 import winsound
@@ -339,12 +432,15 @@ class DesktopBridge:
                         if job.get('filename') == filename: job.update(fileState='error', fileError=error)
             self._revision += 1
 
-    def _export(self, action, timestamps,identifier=None):
-        transcript = self._store.captions(self._store.item(identifier)) if identifier else self._state['transcript']
-        if transcript['status'] != 'ready' or not self._window: return
-        def stamp(value):
-            value = int(value); return f'{value//60}:{value%60:02}'
-        content = '\n'.join((f'[{stamp(cue["start"])}] ' if timestamps else '') + cue['text'] for cue in transcript['cues'])
+    def _export(self, action, timestamps,identifier=None,track_id=None,format='txt'):
+        transcript=self._state['transcript']
+        if identifier:
+            tracks=self._tracks(self._store.item(identifier))
+            chosen=track_id or ((self._state['selectedItem'] or {}).get('transcript') or {}).get('id')
+            transcript=next((t for t in tracks if t['id']==chosen),tracks[0] if tracks else {'status':'unavailable'})
+        if transcript.get('status') != 'ready': raise ValueError('No transcript is available to export.')
+        content=transcript_export(transcript,format,timestamps)
+        if not self._window: return
         def perform():
             if action == 'copy-transcript':
                 from System import Action
@@ -352,6 +448,23 @@ class DesktopBridge:
                 self._window.native.Invoke(Action(lambda: Clipboard.SetText(content)))
             else:
                 import webview
-                result = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename='Framekeep transcript.txt', file_types=('Text files (*.txt)',))
+                result = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename='Framekeep transcript.'+format, file_types=(format.upper()+' files (*.'+format+')',))
                 if result: Path(result[0] if isinstance(result, (tuple, list)) else result).write_text(content, encoding='utf-8')
         threading.Thread(target=perform, daemon=True).start()
+
+
+def transcript_export(track,format='txt',timestamps=True):
+    """Format display copies; originals remain untouched and missing timing stays absent."""
+    import math
+    if format not in ('txt','srt','vtt'): raise ValueError('Choose TXT, SRT or VTT.')
+    cues=track.get('cues',[])
+    timed=bool(cues) and all(type(c.get('start')) in (int,float) and type(c.get('end')) in (int,float)
+                           and math.isfinite(c['start']) and math.isfinite(c['end']) and 0<=c['start']<c['end'] for c in cues)
+    def stamp(value,milliseconds=False):
+        total=round(value*1000); seconds,ms=divmod(total,1000); hours,seconds=divmod(seconds,3600); minutes,seconds=divmod(seconds,60)
+        return (f'{hours:02}:{minutes:02}:{seconds:02}'+('.' if format=='vtt' else ',')+f'{ms:03}') if milliseconds else (f'{hours:02}:' if hours else '')+f'{minutes:02}:{seconds:02}'
+    if format=='txt':
+        if not cues or not timed: return track.get('text') or '\n'.join(c.get('text','') for c in cues)
+        return '\n'.join((f'[{stamp(c["start"])}] ' if timestamps else '')+c['text'] for c in cues)
+    if not timed: raise ValueError('This transcript has no valid timing. Export it as TXT.')
+    return ('WEBVTT\n\n' if format=='vtt' else '')+'\n\n'.join((str(n)+'\n' if format=='srt' else '')+stamp(c['start'],True)+' --> '+stamp(c['end'],True)+'\n'+c['text'] for n,c in enumerate(cues,1))+'\n'
